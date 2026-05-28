@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+repo_translator/__init__.py
+repo_translator/agent.py
+repo_translator/cli.py
+repo_translator/manifest.py
+repo_translator/report.py
+repo_translator.egg-info/PKG-INFO
+repo_translator.egg-info/SOURCES.txt
+repo_translator.egg-info/dependency_links.txt
+repo_translator.egg-info/entry_points.txt
+repo_translator.egg-info/requires.txt
+repo_translator.egg-info/top_level.txt
+tests/test_agent.py
+tests/test_manifest.py
+tests/test_report.py

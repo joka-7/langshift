@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from repo_translator.agent import LANGUAGE_META, _ALIAS_MAP, translate_repo
+from repo_translator.agent import LANGUAGE_META, _ALIAS_MAP, translate_repo, estimate_translation
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Skip dependency manifest translation (package.json etc.)")
     parser.add_argument("--no-report", action="store_true",
                         help="Skip saving the summary report")
+    parser.add_argument("--estimate", "-e", action="store_true",
+                        help="Show token/cost estimate, confirm, then translate")
+    parser.add_argument("--yes",     "-y", action="store_true",
+                        help="Skip confirmation prompt when using --estimate")
     parser.add_argument("--quiet",   "-q", action="store_true",
                         help="Suppress progress output")
     return parser
@@ -80,6 +84,32 @@ def main() -> None:
   To     : {_ALIAS_MAP[to_key]}
   Output : {output_path}
 """)
+
+    if args.estimate:
+        est = estimate_translation(
+            repo_path=input_path,
+            from_lang=from_key,
+            to_lang=to_key,
+            translate_manifests=not args.no_manifest,
+        )
+        manifest_line = f" + {est['manifest_count']} manifest" if est["manifest_count"] else ""
+        print(f"  📊 Cost Estimate  (claude-sonnet-4 pricing)")
+        print(f"  {'─' * 44}")
+        print(f"   Files      : {est['file_count']} source{manifest_line}")
+        print(f"   Input      : ~{est['input_tokens']:,} tokens")
+        print(f"   Output     : ~{est['output_tokens']:,} tokens")
+        print(f"   Est. cost  : ~${est['estimated_cost']:.4f} USD")
+        print(f"  {'─' * 44}\n")
+
+        if not args.yes:
+            try:
+                answer = input("  Proceed with translation? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Aborted.")
+                sys.exit(0)
+            if answer not in ("y", "yes"):
+                print("  Aborted.")
+                sys.exit(0)
 
     report = translate_repo(
         repo_path=input_path,

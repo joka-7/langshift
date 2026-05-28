@@ -20,6 +20,7 @@ from repo_translator.agent import (
     _output_path,
     _try_run,
     collect_files,
+    estimate_translation,
     resolve_language,
     translate_repo,
 )
@@ -330,3 +331,47 @@ class TestTranslateRepo:
 
         assert report.from_lang == "typescript"
         assert report.to_lang == "python"
+
+
+# ─────────────────────────────────────────────
+# estimate_translation
+# ─────────────────────────────────────────────
+
+class TestEstimateTranslation:
+    def test_returns_correct_file_count(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const x = 1;")
+        (tmp_path / "b.ts").write_text("const y = 2;")
+        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+        assert est["file_count"] == 2
+
+    def test_resolves_language_aliases(self, tmp_path):
+        est = estimate_translation(tmp_path, "ts", "py", translate_manifests=False)
+        assert est["from_lang"] == "typescript"
+        assert est["to_lang"] == "python"
+
+    def test_empty_repo_returns_zero_tokens(self, tmp_path):
+        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+        assert est["file_count"] == 0
+        assert est["input_tokens"] == 0
+        assert est["output_tokens"] == 0
+        assert est["estimated_cost"] == 0.0
+
+    def test_cost_is_positive_for_nonempty_repo(self, tmp_path):
+        (tmp_path / "main.ts").write_text("const x: number = 1;" * 100)
+        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+        assert est["estimated_cost"] > 0
+
+    def test_input_tokens_exceed_output_tokens(self, tmp_path):
+        (tmp_path / "main.ts").write_text("const x = 1;" * 50)
+        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+        assert est["input_tokens"] > est["output_tokens"]
+
+    def test_manifest_count_zero_when_disabled(self, tmp_path):
+        (tmp_path / "package.json").write_text('{"dependencies": {}}')
+        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+        assert est["manifest_count"] == 0
+
+    def test_manifest_counted_when_enabled(self, tmp_path):
+        (tmp_path / "package.json").write_text('{"dependencies": {}}')
+        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=True)
+        assert est["manifest_count"] == 1

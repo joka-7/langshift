@@ -13,7 +13,7 @@ from pathlib import Path
 import anthropic
 
 from repo_translator.report import TranslationReport, FileResult
-from repo_translator.manifest import translate_manifest
+from repo_translator.manifest import translate_manifest, _find_manifests
 
 # ---------------------------------------------------------------------------
 # Language metadata
@@ -193,6 +193,12 @@ def collect_files(repo_path: Path, from_lang: str) -> list[Path]:
 MODEL = "claude-sonnet-4-20250514"
 MAX_FIX_ATTEMPTS = 3
 
+# claude-sonnet-4 pricing (USD per million tokens)
+_INPUT_COST_PER_MTOK  = 3.00
+_OUTPUT_COST_PER_MTOK = 15.00
+_CHARS_PER_TOKEN      = 4    # rough approximation
+_PROMPT_OVERHEAD_TOKS = 200  # prompt boilerplate per file
+
 
 def _translate_once(
     client: anthropic.Anthropic,
@@ -321,6 +327,57 @@ def _output_path(
     rel = source_file.relative_to(repo_root)
     new_ext = LANGUAGE_META[to_lang]["extensions"][0]
     return output_root / rel.with_suffix(new_ext)
+
+
+# ---------------------------------------------------------------------------
+# Cost estimation
+# ---------------------------------------------------------------------------
+
+def estimate_translation(
+    repo_path: Path,
+    from_lang: str,
+    to_lang: str,
+    translate_manifests: bool = True,
+) -> dict:
+    """Estimate token usage and cost without making any API calls."""
+    from_lang = resolve_language(from_lang)
+    to_lang   = resolve_language(to_lang)
+    files     = collect_files(repo_path, from_lang)
+
+    src_chars = 0
+    for f in files:
+        try:
+            src_chars += len(f.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
+
+    manifest_chars = 0
+    manifest_count = 0
+    if translate_manifests:
+        for m in _find_manifests(repo_path, from_lang):
+            try:
+                manifest_chars += len(m.read_text(encoding="utf-8", errors="replace"))
+                manifest_count += 1
+            except OSError:
+                pass
+
+    total_calls   = len(files) + manifest_count
+    input_toks    = (src_chars + manifest_chars) // _CHARS_PER_TOKEN + total_calls * _PROMPT_OVERHEAD_TOKS
+    output_toks   = (src_chars + manifest_chars) // _CHARS_PER_TOKEN
+    cost_usd      = (
+        input_toks  / 1_000_000 * _INPUT_COST_PER_MTOK +
+        output_toks / 1_000_000 * _OUTPUT_COST_PER_MTOK
+    )
+
+    return {
+        "from_lang":      from_lang,
+        "to_lang":        to_lang,
+        "file_count":     len(files),
+        "manifest_count": manifest_count,
+        "input_tokens":   input_toks,
+        "output_tokens":  output_toks,
+        "estimated_cost": cost_usd,
+    }
 
 
 # ---------------------------------------------------------------------------
