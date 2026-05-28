@@ -1,0 +1,131 @@
+# langshift 🔄
+
+Translate an entire code repository from one programming language to another using Claude AI.
+
+The agent:
+1. **Translates** dependency manifests (`package.json` → `requirements.txt` etc.)
+2. **Translates** every source file via Claude
+3. **Runs** the translated code automatically (where supported)
+4. **Auto-fixes** runtime errors — up to 3 attempts per file
+5. **Saves** a detailed Markdown + JSON report
+
+---
+
+## Supported languages
+
+| Language | Aliases | Auto-run |
+|---|---|---|
+| TypeScript | `ts` | ✗ |
+| JavaScript | `js` | ✓ (node) |
+| Python | `py` | ✓ (python3) |
+| Java | — | ✗ |
+| Go | — | ✓ (go run) |
+| Rust | `rs` | ✗ |
+| Ruby | `rb` | ✓ (ruby) |
+| C# | `cs`, `c#` | ✗ |
+| PHP | — | ✓ (php) |
+| Kotlin | `kt` | ✗ |
+| Swift | — | ✗ |
+| C++ | `c++` | ✗ |
+| C | — | ✗ |
+
+---
+
+## Installation
+
+```bash
+# Clone
+git clone https://github.com/joka-7/langshift
+cd langshift
+
+# Install
+pip install -e .
+
+# Set API key
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+---
+
+## Usage
+
+```bash
+# Basic
+repo-translate --input ./my-ts-repo --from ts --to python
+
+# Custom output directory
+repo-translate --input ./my-repo --from go --to python --output ./translated
+
+# Skip manifest translation
+repo-translate --input ./my-repo --from ts --to python --no-manifest
+
+# Skip report
+repo-translate --input ./my-repo --from ts --to python --no-report
+
+# All flags
+repo-translate \
+  --input    ./my-repo   \
+  --from     ts          \
+  --to       python      \
+  --output   ./out       \
+  --api-key  sk-ant-...  \
+  --no-manifest          \
+  --no-report            \
+  --quiet
+```
+
+---
+
+## Output structure
+
+```
+my-repo_python/
+├── src/
+│   ├── index.py
+│   └── utils/
+│       └── parser.py
+├── requirements.txt          ← translated from package.json
+├── translation_report.md     ← human-readable summary
+└── translation_report.json   ← machine-readable report
+```
+
+---
+
+## GitHub Actions
+
+Run translations automatically via the **Actions** tab → **Translate Repository** → **Run workflow**.
+
+Required secret: `ANTHROPIC_API_KEY`
+
+The translated code is pushed to the branch you specify (default: `translated`), and the report is uploaded as a workflow artifact.
+
+---
+
+## Example report
+
+```
+  ══════════════════════════════════════════════
+   ✅  Translation Report
+  ══════════════════════════════════════════════
+   From      : typescript
+   To        : python
+   Duration  : 47.3s
+
+   Files     : 12 / 12 translated
+   Auto-fixed: 2 (needed retries)
+   Manifests : 1 translated
+
+   📁 Output : /home/user/my-ts-app_python
+  ══════════════════════════════════════════════
+
+  📄 Report saved → translation_report.md  +  translation_report.json
+```
+
+---
+
+## Contributing
+
+PRs welcome! Ideas for next steps:
+- `--test` flag to run existing test suites post-translation
+- Interactive mode with confirmation per file
+- Support for monorepos with mixed languages

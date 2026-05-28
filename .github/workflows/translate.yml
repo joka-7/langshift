@@ -1,0 +1,67 @@
+name: Translate Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_lang:
+        description: "Source language (e.g. ts, go, java)"
+        required: true
+        default: "typescript"
+      to_lang:
+        description: "Target language (e.g. python, rust, kotlin)"
+        required: true
+        default: "python"
+      input_dir:
+        description: "Directory to translate (default: entire repo)"
+        required: false
+        default: "."
+      output_branch:
+        description: "Branch to push translated code to"
+        required: false
+        default: "translated"
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install repo-translator
+        run: |
+          pip install git+https://github.com/${{ github.repository_owner }}/repo-translator.git
+
+      - name: Run translation
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          repo-translate \
+            --input "${{ github.event.inputs.input_dir }}" \
+            --from  "${{ github.event.inputs.from_lang }}" \
+            --to    "${{ github.event.inputs.to_lang }}" \
+            --output ./translated_output
+
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: translation-report
+          path: |
+            translated_output/translation_report.md
+            translated_output/translation_report.json
+
+      - name: Push translated code to branch
+        run: |
+          git config user.name  "repo-translator[bot]"
+          git config user.email "repo-translator@users.noreply.github.com"
+          git checkout -B "${{ github.event.inputs.output_branch }}"
+          git add translated_output/
+          git commit -m "chore: translate ${{ github.event.inputs.from_lang }} → ${{ github.event.inputs.to_lang }} [auto]" || echo "Nothing to commit"
+          git push origin "${{ github.event.inputs.output_branch }}" --force
