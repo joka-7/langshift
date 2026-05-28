@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from repo_translator.agent import LANGUAGE_META, _ALIAS_MAP, translate_repo, estimate_translation
+from repo_translator.agent import LANGUAGE_META, MODELS, DEFAULT_MODEL, _ALIAS_MAP, translate_repo, estimate_translation
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output directory (default: <input>_<to_lang>)")
     parser.add_argument("--api-key", metavar="KEY", default=None,
                         help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var)")
+    parser.add_argument("--model",   "-m", default=DEFAULT_MODEL,
+                        choices=list(MODELS),
+                        help=f"Claude model to use (default: {DEFAULT_MODEL})")
     parser.add_argument("--run-tests", action="store_true",
                         help="After translation, run the translated test suite")
     parser.add_argument("--no-manifest", action="store_true",
@@ -74,6 +77,8 @@ def main() -> None:
         else input_path.parent / f"{input_path.name}_{_ALIAS_MAP[to_key]}"
     )
 
+    model_id, _, _ = MODELS[args.model]
+
     print(f"""
 ╔══════════════════════════════════════════════╗
 ║           repo-translator  🔄                ║
@@ -82,6 +87,7 @@ def main() -> None:
   Input  : {input_path}
   From   : {_ALIAS_MAP[from_key]}
   To     : {_ALIAS_MAP[to_key]}
+  Model  : {args.model}  ({model_id})
   Output : {output_path}
 """)
 
@@ -91,9 +97,10 @@ def main() -> None:
             from_lang=from_key,
             to_lang=to_key,
             translate_manifests=not args.no_manifest,
+            model=args.model,
         )
         manifest_line = f" + {est['manifest_count']} manifest" if est["manifest_count"] else ""
-        print(f"  📊 Cost Estimate  (claude-sonnet-4 pricing)")
+        print(f"  📊 Cost Estimate  ({args.model} pricing)")
         print(f"  {'─' * 44}")
         print(f"   Files      : {est['file_count']} source{manifest_line}")
         print(f"   Input      : ~{est['input_tokens']:,} tokens")
@@ -120,6 +127,7 @@ def main() -> None:
         verbose=not args.quiet,
         translate_manifests=not args.no_manifest,
         run_tests_after=args.run_tests,
+        model=args.model,
     )
 
     report.print_summary()

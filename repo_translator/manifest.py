@@ -10,7 +10,7 @@ from pathlib import Path
 
 import anthropic
 
-MODEL = "claude-sonnet-4-20250514"
+_DEFAULT_MODEL_ID = "claude-sonnet-4-6"
 
 # Maps (from_lang, to_lang) → list of manifest filenames to look for
 MANIFEST_FILES: dict[str, list[str]] = {
@@ -58,6 +58,7 @@ def translate_manifest(
     from_lang: str,
     to_lang: str,
     verbose: bool = True,
+    model_id: str = _DEFAULT_MODEL_ID,
 ) -> dict:
     """
     Find and translate dependency manifests.
@@ -94,7 +95,7 @@ Source ({from_lang} - {manifest.name}):
 
         try:
             message = client.messages.create(
-                model=MODEL,
+                model=model_id,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )

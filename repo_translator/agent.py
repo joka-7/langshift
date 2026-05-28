@@ -190,14 +190,17 @@ def collect_files(repo_path: Path, from_lang: str) -> list[Path]:
 # Claude translation
 # ---------------------------------------------------------------------------
 
-MODEL = "claude-sonnet-4-20250514"
 MAX_FIX_ATTEMPTS = 3
-
-# claude-sonnet-4 pricing (USD per million tokens)
-_INPUT_COST_PER_MTOK  = 3.00
-_OUTPUT_COST_PER_MTOK = 15.00
 _CHARS_PER_TOKEN      = 4    # rough approximation
 _PROMPT_OVERHEAD_TOKS = 200  # prompt boilerplate per file
+
+# Supported models: friendly name → (model id, input $/MTok, output $/MTok)
+MODELS: dict[str, tuple[str, float, float]] = {
+    "haiku":  ("claude-haiku-4-5-20251001",  0.80,  4.00),
+    "sonnet": ("claude-sonnet-4-6",           3.00, 15.00),
+    "opus":   ("claude-opus-4-8",            15.00, 75.00),
+}
+DEFAULT_MODEL = "sonnet"
 
 
 def _translate_once(
@@ -207,6 +210,7 @@ def _translate_once(
     to_lang: str,
     is_test: bool = False,
     error_context: str | None = None,
+    model_id: str = MODELS[DEFAULT_MODEL][0],
 ) -> str:
     fix_note = ""
     if error_context:
@@ -244,7 +248,7 @@ def _translate_once(
     """).strip()
 
     message = client.messages.create(
-        model=MODEL,
+        model=model_id,
         max_tokens=8096,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -338,11 +342,16 @@ def estimate_translation(
     from_lang: str,
     to_lang: str,
     translate_manifests: bool = True,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """Estimate token usage and cost without making any API calls."""
     from_lang = resolve_language(from_lang)
     to_lang   = resolve_language(to_lang)
     files     = collect_files(repo_path, from_lang)
+
+    if model not in MODELS:
+        raise ValueError(f"Unknown model '{model}'. Choose from: {', '.join(MODELS)}")
+    _, input_price, output_price = MODELS[model]
 
     src_chars = 0
     for f in files:
@@ -361,17 +370,18 @@ def estimate_translation(
             except OSError:
                 pass
 
-    total_calls   = len(files) + manifest_count
-    input_toks    = (src_chars + manifest_chars) // _CHARS_PER_TOKEN + total_calls * _PROMPT_OVERHEAD_TOKS
-    output_toks   = (src_chars + manifest_chars) // _CHARS_PER_TOKEN
-    cost_usd      = (
-        input_toks  / 1_000_000 * _INPUT_COST_PER_MTOK +
-        output_toks / 1_000_000 * _OUTPUT_COST_PER_MTOK
+    total_calls = len(files) + manifest_count
+    input_toks  = (src_chars + manifest_chars) // _CHARS_PER_TOKEN + total_calls * _PROMPT_OVERHEAD_TOKS
+    output_toks = (src_chars + manifest_chars) // _CHARS_PER_TOKEN
+    cost_usd    = (
+        input_toks  / 1_000_000 * input_price +
+        output_toks / 1_000_000 * output_price
     )
 
     return {
         "from_lang":      from_lang,
         "to_lang":        to_lang,
+        "model":          model,
         "file_count":     len(files),
         "manifest_count": manifest_count,
         "input_tokens":   input_toks,
@@ -393,9 +403,14 @@ def translate_repo(
     verbose: bool = True,
     translate_manifests: bool = True,
     run_tests_after: bool = False,
+    model: str = DEFAULT_MODEL,
 ) -> TranslationReport:
     from_lang = resolve_language(from_lang)
     to_lang   = resolve_language(to_lang)
+
+    if model not in MODELS:
+        raise ValueError(f"Unknown model '{model}'. Choose from: {', '.join(MODELS)}")
+    model_id = MODELS[model][0]
 
     client = anthropic.Anthropic(api_key=api_key)
 
@@ -411,7 +426,7 @@ def translate_repo(
     # ── 1. Translate manifests ─────────────────────────────────────────────
     if translate_manifests:
         manifest_result = translate_manifest(
-            client, repo_path, output_path, from_lang, to_lang, verbose=verbose
+            client, repo_path, output_path, from_lang, to_lang, verbose=verbose, model_id=model_id,
         )
         report.manifest_translated = manifest_result.get("translated", [])
 
@@ -458,7 +473,7 @@ def translate_repo(
             try:
                 translated_code = _translate_once(
                     client, source_code, from_lang, to_lang,
-                    is_test=is_test, error_context=error_ctx,
+                    is_test=is_test, error_context=error_ctx, model_id=model_id,
                 )
             except Exception as e:
                 if verbose:
