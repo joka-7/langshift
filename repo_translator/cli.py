@@ -49,9 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
                              f"Claude: haiku/sonnet/opus. "
                              f"OpenAI: gpt-4o, gpt-4o-mini. "
                              f"Gemini: gemini-1.5-pro. "
-                             f"Ollama: llama3, mistral, etc.")
+                             f"Groq: llama-3.1-70b-versatile, mixtral-8x7b-32768. "
+                             f"Ollama: llama3, deepseek-coder, etc. "
+                             f"openai-compat: any model supported by the target API.")
+    parser.add_argument("--base-url", metavar="URL", default=None,
+                        help="Base URL for openai-compat provider "
+                             "(e.g. https://api.together.xyz/v1, https://openrouter.ai/api/v1)")
     parser.add_argument("--api-key",  metavar="KEY", default=None,
-                        help="API key (defaults to provider env var: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY)")
+                        help="API key (env vars: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+                             "GEMINI_API_KEY, GROQ_API_KEY, OPENAI_COMPAT_API_KEY)")
     parser.add_argument("--estimate", "-e", action="store_true",
                         help="Show token/cost estimate, confirm, then translate")
     parser.add_argument("--yes",      "-y", action="store_true",
@@ -97,6 +103,12 @@ def main() -> None:
     pricing_info = PRICING.get((args.provider, args.model))
     if args.provider == "ollama":
         price_label = "free (local)"
+    elif args.provider == "groq" and not pricing_info:
+        price_label = "free tier (rate-limited)"
+    elif args.provider == "groq" and pricing_info:
+        price_label = f"${pricing_info[0]:.2f}/${pricing_info[1]:.2f} per MTok  (free tier available)"
+    elif args.provider == "openai-compat":
+        price_label = f"varies by service  ({args.base_url or 'no --base-url set'})"
     elif pricing_info:
         price_label = f"${pricing_info[0]:.2f}/${pricing_info[1]:.2f} per MTok in/out"
     else:
@@ -150,7 +162,7 @@ def main() -> None:
                 sys.exit(0)
 
     try:
-        provider = make_provider(args.provider, args.model, args.api_key)
+        provider = make_provider(args.provider, args.model, args.api_key, args.base_url)
     except (ImportError, ValueError) as e:
         print(f"Error: {e}")
         sys.exit(1)

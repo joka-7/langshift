@@ -193,16 +193,23 @@ _CHARS_PER_TOKEN      = 4
 _PROMPT_OVERHEAD_TOKS = 200
 
 # (provider, model_name) → (input $/MTok, output $/MTok)
+# Groq has a free tier (rate-limited); prices below are for paid/on-demand usage.
+# openai-compat pricing is unknown (varies by service) — will show None in estimate.
 PRICING: dict[tuple[str, str], tuple[float, float]] = {
-    ("claude", "haiku"):              (0.80,  4.00),
-    ("claude", "sonnet"):             (3.00, 15.00),
-    ("claude", "opus"):               (15.00, 75.00),
-    ("openai", "gpt-4o"):             (5.00, 15.00),
-    ("openai", "gpt-4o-mini"):        (0.15,  0.60),
-    ("openai", "gpt-4-turbo"):        (10.00, 30.00),
-    ("gemini", "gemini-1.5-pro"):     (3.50, 10.50),
-    ("gemini", "gemini-1.5-flash"):   (0.35,  1.05),
-    ("gemini", "gemini-2.0-flash"):   (0.10,  0.40),
+    ("claude",  "haiku"):                       (0.80,   4.00),
+    ("claude",  "sonnet"):                      (3.00,  15.00),
+    ("claude",  "opus"):                        (15.00, 75.00),
+    ("openai",  "gpt-4o"):                      (5.00,  15.00),
+    ("openai",  "gpt-4o-mini"):                 (0.15,   0.60),
+    ("openai",  "gpt-4-turbo"):                 (10.00, 30.00),
+    ("gemini",  "gemini-1.5-pro"):              (3.50,  10.50),
+    ("gemini",  "gemini-1.5-flash"):            (0.35,   1.05),
+    ("gemini",  "gemini-2.0-flash"):            (0.10,   0.40),
+    ("groq",    "llama-3.1-70b-versatile"):     (0.59,   0.79),
+    ("groq",    "llama-3.1-8b-instant"):        (0.05,   0.08),
+    ("groq",    "llama3-70b-8192"):             (0.59,   0.79),
+    ("groq",    "mixtral-8x7b-32768"):          (0.24,   0.24),
+    ("groq",    "gemma-7b-it"):                 (0.07,   0.07),
 }
 # Confidence scoring: extra tokens per file (truncated src + translated + prompt)
 _CONFIDENCE_INPUT_TOKS  = 1200
@@ -433,8 +440,9 @@ def estimate_translation(
         input_toks  += len(files) * _CONFIDENCE_INPUT_TOKS
         output_toks += len(files) * _CONFIDENCE_OUTPUT_TOKS
 
-    if provider == "ollama":
-        cost_usd: float | None = 0.0
+    if provider in ("ollama", "openai-compat"):
+        # ollama is local/free; openai-compat pricing varies by service
+        cost_usd: float | None = 0.0 if provider == "ollama" else None
     else:
         pricing = PRICING.get((provider, model))
         if pricing:

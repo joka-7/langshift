@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 from repo_translator.providers import make_provider, SUPPORTED_PROVIDERS
 from repo_translator.providers.base import LLMProvider
 from repo_translator.providers.claude import ClaudeProvider, CLAUDE_MODELS
+from repo_translator.providers.groq import GroqProvider
+from repo_translator.providers.openai_compat import OpenAICompatProvider
 
 
 # ─────────────────────────────────────────────
@@ -92,3 +94,74 @@ class TestClaudeProvider:
         assert set(CLAUDE_MODELS.keys()) == {"haiku", "sonnet", "opus"}
         for model_id in CLAUDE_MODELS.values():
             assert model_id.startswith("claude-")
+
+
+# ─────────────────────────────────────────────
+# GroqProvider
+# ─────────────────────────────────────────────
+
+class TestGroqProvider:
+    def test_groq_missing_sdk_raises_import_error(self):
+        with patch.dict("sys.modules", {"groq": None}):
+            with pytest.raises(ImportError, match="pip install groq"):
+                make_provider("groq", "llama-3.1-70b-versatile")
+
+    def test_complete_calls_chat_completions(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="translated"))
+        ]
+        with patch("repo_translator.providers.groq._groq" if hasattr(GroqProvider, "_groq") else
+                   "repo_translator.providers.groq.GroqProvider.__init__", return_value=None):
+            import groq as _groq_mod
+            with patch("repo_translator.providers.groq._groq", create=True):
+                pass
+        # Simpler: patch at import level
+        mock_groq_mod = MagicMock()
+        mock_groq_mod.Groq.return_value = mock_client
+        with patch.dict("sys.modules", {"groq": mock_groq_mod}):
+            p = GroqProvider(model_id="llama-3.1-70b-versatile")
+            result = p.complete("translate this")
+        assert result == "translated"
+
+    def test_groq_in_supported_providers(self):
+        assert "groq" in SUPPORTED_PROVIDERS
+
+
+# ─────────────────────────────────────────────
+# OpenAICompatProvider
+# ─────────────────────────────────────────────
+
+class TestOpenAICompatProvider:
+    def test_requires_base_url(self):
+        with pytest.raises(ValueError, match="--base-url"):
+            make_provider("openai-compat", "some-model")
+
+    def test_openai_compat_in_supported_providers(self):
+        assert "openai-compat" in SUPPORTED_PROVIDERS
+
+    def test_complete_uses_provided_base_url(self):
+        mock_openai = MagicMock()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="result"))
+        ]
+        mock_openai.OpenAI.return_value = mock_client
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            p = OpenAICompatProvider(
+                model_id="meta-llama/Llama-3-70b",
+                base_url="https://api.together.xyz/v1",
+                api_key="test-key",
+            )
+            result = p.complete("hello")
+        assert result == "result"
+        mock_openai.OpenAI.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://api.together.xyz/v1",
+        )
+
+    def test_openai_missing_sdk_raises_for_compat(self):
+        with patch.dict("sys.modules", {"openai": None}):
+            with pytest.raises(ImportError, match="pip install openai"):
+                make_provider("openai-compat", "llama3",
+                              base_url="https://api.together.xyz/v1")
