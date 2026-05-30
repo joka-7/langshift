@@ -11,6 +11,13 @@ repo_translator.egg-info/dependency_links.txt
 repo_translator.egg-info/entry_points.txt
 repo_translator.egg-info/requires.txt
 repo_translator.egg-info/top_level.txt
+repo_translator/providers/__init__.py
+repo_translator/providers/base.py
+repo_translator/providers/claude.py
+repo_translator/providers/gemini.py
+repo_translator/providers/ollama.py
+repo_translator/providers/openai.py
 tests/test_agent.py
 tests/test_manifest.py
+tests/test_providers.py
 tests/test_report.py

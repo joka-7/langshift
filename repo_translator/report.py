@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+_CONFIDENCE_THRESHOLD = 70
+
 
 @dataclass
 class FileResult:
@@ -17,6 +19,8 @@ class FileResult:
     attempts: int = 1
     error: str | None = None
     run_output: str | None = None
+    confidence: int | None = None
+    confidence_reason: str | None = None
 
 
 @dataclass
@@ -29,7 +33,7 @@ class TranslationReport:
     elapsed_seconds: float = 0.0
     files: list[FileResult] = field(default_factory=list)
     manifest_translated: list[str] = field(default_factory=list)
-    tests_passed: bool | None = None   # None = not run
+    tests_passed: bool | None = None
     test_output: str | None = None
 
     # ------------------------------------------------------------------ #
@@ -54,6 +58,20 @@ class TranslationReport:
     @property
     def needed_retry(self) -> int:
         return sum(1 for f in self.files if f.attempts > 1 and f.status != "failed")
+
+    @property
+    def high_confidence(self) -> int:
+        return sum(
+            1 for f in self.files
+            if f.confidence is not None and f.confidence >= _CONFIDENCE_THRESHOLD
+        )
+
+    @property
+    def needs_review(self) -> int:
+        return sum(
+            1 for f in self.files
+            if f.confidence is not None and f.confidence < _CONFIDENCE_THRESHOLD
+        )
 
     # ------------------------------------------------------------------ #
     # Output
@@ -80,6 +98,12 @@ class TranslationReport:
             print(f"   🧪 Tests   : ✅ passed")
         elif self.tests_passed is False:
             print(f"   🧪 Tests   : ❌ failed")
+
+        scored = self.high_confidence + self.needs_review
+        if scored:
+            print(f"   Confidence: {self.high_confidence} high (≥{_CONFIDENCE_THRESHOLD}) "
+                  f"/ {self.needs_review} need review (<{_CONFIDENCE_THRESHOLD})")
+
         if self.failed:
             print(f"\n   ✗ Failed  : {self.failed} files")
             for f in self.files:
@@ -92,7 +116,6 @@ class TranslationReport:
         print("  ══════════════════════════════════════════════\n")
 
     def save(self, output_path: Path) -> None:
-        """Save report as both JSON and Markdown."""
         report_dir = output_path
         report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -112,6 +135,8 @@ class TranslationReport:
                 "skipped": self.skipped,
                 "needed_retry": self.needed_retry,
                 "manifests_translated": len(self.manifest_translated),
+                "high_confidence": self.high_confidence,
+                "needs_review": self.needs_review,
             },
             "files": [asdict(f) for f in self.files],
             "manifest_translated": self.manifest_translated,
@@ -120,15 +145,20 @@ class TranslationReport:
 
         # Markdown
         md_path = report_dir / "translation_report.md"
-        md = self._to_markdown()
-        md_path.write_text(md, encoding="utf-8")
+        md_path.write_text(self._to_markdown(), encoding="utf-8")
 
         print(f"  📄 Report saved → {json_path.name}  +  {md_path.name}\n")
 
     def _to_markdown(self) -> str:
-        ok_files    = [f for f in self.files if f.status in ("ok", "ok_with_warnings")]
-        failed_files = [f for f in self.files if f.status == "failed"]
+        ok_files      = [f for f in self.files if f.status in ("ok", "ok_with_warnings")]
+        failed_files  = [f for f in self.files if f.status == "failed"]
         skipped_files = [f for f in self.files if f.status == "skipped"]
+
+        scored = self.high_confidence + self.needs_review
+        conf_row = (
+            f"| **Confidence** | {self.high_confidence} high / {self.needs_review} need review |\n"
+            if scored else ""
+        )
 
         lines = [
             f"# Translation Report",
@@ -142,21 +172,29 @@ class TranslationReport:
             f"| **Files translated** | {self.translated} / {self.total} |",
             f"| **Failed** | {self.failed} |",
             f"| **Auto-fixed** | {self.needed_retry} |",
-            f"",
         ]
+        if conf_row:
+            lines.append(conf_row.strip())
+        lines.append("")
 
         if self.manifest_translated:
             lines += [
-                "## 📦 Manifests Translated",
-                "",
+                "## 📦 Manifests Translated", "",
             ] + [f"- `{m}`" for m in self.manifest_translated] + [""]
 
         if ok_files:
             lines += ["## ✅ Translated Files", ""]
             for f in ok_files:
                 suffix = " *(needed retry)*" if f.attempts > 1 else ""
-                warn = " ⚠️" if f.status == "ok_with_warnings" else ""
-                lines.append(f"- `{f.path}`{warn}{suffix}")
+                warn   = " ⚠️" if f.status == "ok_with_warnings" else ""
+                if f.confidence is not None:
+                    flag = " ⚠️ needs review" if f.confidence < _CONFIDENCE_THRESHOLD else ""
+                    conf_str = f"  — {f.confidence}/100{flag}"
+                    if f.confidence_reason:
+                        conf_str += f" *({f.confidence_reason})*"
+                else:
+                    conf_str = ""
+                lines.append(f"- `{f.path}`{warn}{suffix}{conf_str}")
             lines.append("")
 
         if failed_files:

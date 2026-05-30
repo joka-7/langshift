@@ -5,14 +5,11 @@ to the target language's equivalent dependency file.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import anthropic
+from repo_translator.providers.base import LLMProvider
 
-_DEFAULT_MODEL_ID = "claude-sonnet-4-6"
-
-# Maps (from_lang, to_lang) → list of manifest filenames to look for
+# Maps from_lang → list of manifest filenames to look for
 MANIFEST_FILES: dict[str, list[str]] = {
     "typescript":   ["package.json"],
     "javascript":   ["package.json"],
@@ -52,13 +49,12 @@ def _find_manifests(repo_path: Path, from_lang: str) -> list[Path]:
 
 
 def translate_manifest(
-    client: anthropic.Anthropic,
+    provider: LLMProvider,
     repo_path: Path,
     output_path: Path,
     from_lang: str,
     to_lang: str,
     verbose: bool = True,
-    model_id: str = _DEFAULT_MODEL_ID,
 ) -> dict:
     """
     Find and translate dependency manifests.
@@ -94,14 +90,8 @@ Source ({from_lang} - {manifest.name}):
 """
 
         try:
-            message = client.messages.create(
-                model=model_id,
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            translated_content = message.content[0].text.strip()
+            translated_content = provider.complete(prompt, max_tokens=4096)
 
-            # Determine output location — mirror the relative path but rename the file
             dest_dir = output_path / rel.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_file = dest_dir / target_name

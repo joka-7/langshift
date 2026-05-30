@@ -7,48 +7,64 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from pathlib import Path
 
-from repo_translator.agent import LANGUAGE_META, MODELS, DEFAULT_MODEL, _ALIAS_MAP, translate_repo, estimate_translation
+from repo_translator.agent import (
+    LANGUAGE_META,
+    PRICING,
+    DEFAULT_PROVIDER,
+    DEFAULT_MODEL,
+    _ALIAS_MAP,
+    translate_repo,
+    estimate_translation,
+)
+from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider
 
 
 def build_parser() -> argparse.ArgumentParser:
-    supported = ", ".join(
+    supported_langs = ", ".join(
         f"{name} ({', '.join(m['aliases'])})" if m["aliases"] else name
         for name, m in LANGUAGE_META.items()
     )
 
     parser = argparse.ArgumentParser(
         prog="repo-translate",
-        description="Translate a code repository from one language to another using Claude AI.",
+        description="Translate a code repository from one language to another using an LLM.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"Supported languages:\n  {supported}",
+        epilog=f"Supported languages:\n  {supported_langs}",
     )
-    parser.add_argument("--input",   "-i", required=True, metavar="PATH",
+    parser.add_argument("--input",    "-i", required=True, metavar="PATH",
                         help="Path to the source repository")
-    parser.add_argument("--from",    "-f", dest="from_lang", required=True, metavar="LANG",
+    parser.add_argument("--from",     "-f", dest="from_lang", required=True, metavar="LANG",
                         help="Source language (e.g. ts, go, java)")
-    parser.add_argument("--to",      "-t", dest="to_lang",   required=True, metavar="LANG",
+    parser.add_argument("--to",       "-t", dest="to_lang",   required=True, metavar="LANG",
                         help="Target language (e.g. python, rust, kotlin)")
-    parser.add_argument("--output",  "-o", metavar="PATH", default=None,
+    parser.add_argument("--output",   "-o", metavar="PATH", default=None,
                         help="Output directory (default: <input>_<to_lang>)")
-    parser.add_argument("--api-key", metavar="KEY", default=None,
-                        help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var)")
-    parser.add_argument("--model",   "-m", default=DEFAULT_MODEL,
-                        choices=list(MODELS),
-                        help=f"Claude model to use (default: {DEFAULT_MODEL})")
+    parser.add_argument("--provider", "-p", default=DEFAULT_PROVIDER,
+                        choices=list(SUPPORTED_PROVIDERS),
+                        help=f"LLM provider (default: {DEFAULT_PROVIDER})")
+    parser.add_argument("--model",    "-m", default=DEFAULT_MODEL, metavar="MODEL",
+                        help=f"Model name (default: {DEFAULT_MODEL}). "
+                             f"Claude: haiku/sonnet/opus. "
+                             f"OpenAI: gpt-4o, gpt-4o-mini. "
+                             f"Gemini: gemini-1.5-pro. "
+                             f"Ollama: llama3, mistral, etc.")
+    parser.add_argument("--api-key",  metavar="KEY", default=None,
+                        help="API key (defaults to provider env var: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY)")
+    parser.add_argument("--estimate", "-e", action="store_true",
+                        help="Show token/cost estimate, confirm, then translate")
+    parser.add_argument("--yes",      "-y", action="store_true",
+                        help="Skip confirmation prompt when using --estimate")
     parser.add_argument("--run-tests", action="store_true",
                         help="After translation, run the translated test suite")
     parser.add_argument("--no-manifest", action="store_true",
                         help="Skip dependency manifest translation (package.json etc.)")
+    parser.add_argument("--no-confidence", action="store_true",
+                        help="Skip confidence scoring (saves extra API calls)")
     parser.add_argument("--no-report", action="store_true",
                         help="Skip saving the summary report")
-    parser.add_argument("--estimate", "-e", action="store_true",
-                        help="Show token/cost estimate, confirm, then translate")
-    parser.add_argument("--yes",     "-y", action="store_true",
-                        help="Skip confirmation prompt when using --estimate")
-    parser.add_argument("--quiet",   "-q", action="store_true",
+    parser.add_argument("--quiet",    "-q", action="store_true",
                         help="Suppress progress output")
     return parser
 
@@ -77,18 +93,25 @@ def main() -> None:
         else input_path.parent / f"{input_path.name}_{_ALIAS_MAP[to_key]}"
     )
 
-    model_id, _, _ = MODELS[args.model]
+    # Pricing label for display
+    pricing_info = PRICING.get((args.provider, args.model))
+    if args.provider == "ollama":
+        price_label = "free (local)"
+    elif pricing_info:
+        price_label = f"${pricing_info[0]:.2f}/${pricing_info[1]:.2f} per MTok in/out"
+    else:
+        price_label = "pricing unknown"
 
     print(f"""
 ╔══════════════════════════════════════════════╗
-║           repo-translator  🔄                ║
+║           langshift  🔄                      ║
 ╚══════════════════════════════════════════════╝
 
-  Input  : {input_path}
-  From   : {_ALIAS_MAP[from_key]}
-  To     : {_ALIAS_MAP[to_key]}
-  Model  : {args.model}  ({model_id})
-  Output : {output_path}
+  Input    : {input_path}
+  From     : {_ALIAS_MAP[from_key]}
+  To       : {_ALIAS_MAP[to_key]}
+  Provider : {args.provider} / {args.model}  ({price_label})
+  Output   : {output_path}
 """)
 
     if args.estimate:
@@ -97,15 +120,23 @@ def main() -> None:
             from_lang=from_key,
             to_lang=to_key,
             translate_manifests=not args.no_manifest,
+            provider=args.provider,
             model=args.model,
+            score_confidence=not args.no_confidence,
         )
         manifest_line = f" + {est['manifest_count']} manifest" if est["manifest_count"] else ""
-        print(f"  📊 Cost Estimate  ({args.model} pricing)")
+        conf_note     = "  (includes confidence scoring calls)" if not args.no_confidence else ""
+        cost_str      = (
+            f"~${est['estimated_cost']:.4f} USD"
+            if est["estimated_cost"] is not None
+            else "unknown (pricing not on record)"
+        )
+        print(f"  📊 Cost Estimate  ({args.provider}/{args.model})")
         print(f"  {'─' * 44}")
         print(f"   Files      : {est['file_count']} source{manifest_line}")
-        print(f"   Input      : ~{est['input_tokens']:,} tokens")
+        print(f"   Input      : ~{est['input_tokens']:,} tokens{conf_note}")
         print(f"   Output     : ~{est['output_tokens']:,} tokens")
-        print(f"   Est. cost  : ~${est['estimated_cost']:.4f} USD")
+        print(f"   Est. cost  : {cost_str}")
         print(f"  {'─' * 44}\n")
 
         if not args.yes:
@@ -118,16 +149,22 @@ def main() -> None:
                 print("  Aborted.")
                 sys.exit(0)
 
+    try:
+        provider = make_provider(args.provider, args.model, args.api_key)
+    except (ImportError, ValueError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
     report = translate_repo(
         repo_path=input_path,
         output_path=output_path,
         from_lang=from_key,
         to_lang=to_key,
-        api_key=args.api_key,
+        provider=provider,
         verbose=not args.quiet,
         translate_manifests=not args.no_manifest,
         run_tests_after=args.run_tests,
-        model=args.model,
+        score_confidence=not args.no_confidence,
     )
 
     report.print_summary()

@@ -10,6 +10,16 @@ Requires-Dist: anthropic>=0.50.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-mock>=3.12; extra == "dev"
+Provides-Extra: openai
+Requires-Dist: openai>=1.0; extra == "openai"
+Provides-Extra: gemini
+Requires-Dist: google-generativeai>=0.5; extra == "gemini"
+Provides-Extra: ollama
+Requires-Dist: ollama>=0.1; extra == "ollama"
+Provides-Extra: all-providers
+Requires-Dist: openai>=1.0; extra == "all-providers"
+Requires-Dist: google-generativeai>=0.5; extra == "all-providers"
+Requires-Dist: ollama>=0.1; extra == "all-providers"
 
 # langshift 🔄
 

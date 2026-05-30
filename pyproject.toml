@@ -18,6 +18,20 @@ dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",
 ]
+openai = [
+    "openai>=1.0",
+]
+gemini = [
+    "google-generativeai>=0.5",
+]
+ollama = [
+    "ollama>=0.1",
+]
+all-providers = [
+    "openai>=1.0",
+    "google-generativeai>=0.5",
+    "ollama>=0.1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

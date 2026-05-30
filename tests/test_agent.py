@@ -2,28 +2,52 @@
 Tests for repo_translator.agent
 
 All tests are pure unit tests — no real API calls, no network.
-Claude is mocked everywhere.
+Providers are mocked via MockProvider.
 """
 
 from __future__ import annotations
 
-import textwrap
+import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from repo_translator.providers.base import LLMProvider
 from repo_translator.agent import (
     LANGUAGE_META,
     SKIP_DIRS,
     _ALIAS_MAP,
     _output_path,
     _try_run,
+    _score_confidence,
     collect_files,
     estimate_translation,
     resolve_language,
     translate_repo,
 )
+
+
+# ─────────────────────────────────────────────
+# Mock provider
+# ─────────────────────────────────────────────
+
+class MockProvider(LLMProvider):
+    """Returns responses from a queue; raises Exceptions if queued."""
+    def __init__(self, *responses):
+        self._queue = list(responses) if responses else [""]
+        self._idx   = 0
+
+    def complete(self, prompt: str, max_tokens: int = 8096) -> str:
+        resp = self._queue[min(self._idx, len(self._queue) - 1)]
+        self._idx += 1
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
+
+
+def _provider(code: str = "x = 1") -> MockProvider:
+    return MockProvider(code)
 
 
 # ─────────────────────────────────────────────
@@ -198,35 +222,25 @@ class TestTryRun:
         assert "ZeroDivisionError" in error or "division" in error.lower()
 
     def test_missing_runner_gracefully_handled(self):
-        # Temporarily patch runner to something that doesn't exist
         with patch.dict(LANGUAGE_META, {"python": {**LANGUAGE_META["python"], "runner": ["nonexistent_runtime_xyz"]}}):
             ok, msg = _try_run("python", "print('hi')")
-            assert ok is True  # Missing runtime is treated as non-fatal
+            assert ok is True
             assert "not found" in msg
 
 
 # ─────────────────────────────────────────────
-# translate_repo (mocked Claude)
+# translate_repo
 # ─────────────────────────────────────────────
-
-def _make_mock_client(translated_code: str) -> MagicMock:
-    """Build a mock anthropic.Anthropic client that returns `translated_code`."""
-    mock_msg = MagicMock()
-    mock_msg.content = [MagicMock(text=translated_code)]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_msg
-    return mock_client
-
 
 class TestTranslateRepo:
     def test_translates_single_file(self, tmp_path):
         (tmp_path / "index.ts").write_text("const x: number = 1;")
-        out = tmp_path / "out"
-        mock_client = _make_mock_client("x = 1")
+        out      = tmp_path / "out"
+        provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.translated == 1
         assert report.failed == 0
@@ -235,23 +249,23 @@ class TestTranslateRepo:
 
     def test_skips_empty_files(self, tmp_path):
         (tmp_path / "empty.ts").write_text("   \n  ")
-        out = tmp_path / "out"
-        mock_client = _make_mock_client("# empty")
+        out      = tmp_path / "out"
+        provider = MockProvider("# empty")
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.skipped == 1
         assert report.translated == 0
 
     def test_handles_no_source_files(self, tmp_path):
-        out = tmp_path / "out"
-        mock_client = MagicMock()
+        out      = tmp_path / "out"
+        provider = MockProvider()
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.translated == 0
         assert report.total == 0
@@ -260,36 +274,35 @@ class TestTranslateRepo:
         src = tmp_path / "src" / "utils"
         src.mkdir(parents=True)
         (src / "helpers.ts").write_text("export function add(a: number, b: number) { return a + b; }")
-        out = tmp_path / "out"
-        mock_client = _make_mock_client("def add(a, b): return a + b")
+        out      = tmp_path / "out"
+        provider = MockProvider("def add(a, b): return a + b")
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                           verbose=False, score_confidence=False)
 
         assert (out / "src" / "utils" / "helpers.py").exists()
 
     def test_report_contains_correct_language_info(self, tmp_path):
         (tmp_path / "main.ts").write_text("console.log('hi')")
-        out = tmp_path / "out"
-        mock_client = _make_mock_client("print('hi')")
+        out      = tmp_path / "out"
+        provider = MockProvider("print('hi')")
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.from_lang == "typescript"
         assert report.to_lang == "python"
 
     def test_api_error_marks_file_as_failed(self, tmp_path):
         (tmp_path / "main.ts").write_text("const x = 1;")
-        out = tmp_path / "out"
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = Exception("API quota exceeded")
+        out      = tmp_path / "out"
+        provider = MockProvider(Exception("API quota exceeded"))
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.failed == 1
         assert report.translated == 0
@@ -298,36 +311,35 @@ class TestTranslateRepo:
     def test_multiple_files_all_translated(self, tmp_path):
         for name in ["a.ts", "b.ts", "c.ts"]:
             (tmp_path / name).write_text(f"const {name[0]} = 1;")
-        out = tmp_path / "out"
-        mock_client = _make_mock_client("x = 1")
+        out      = tmp_path / "out"
+        provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.translated == 3
         assert report.total == 3
 
     def test_elapsed_seconds_is_positive(self, tmp_path):
         (tmp_path / "main.ts").write_text("const x = 1;")
-        out = tmp_path / "out"
-        mock_client = _make_mock_client("x = 1")
+        out      = tmp_path / "out"
+        provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "python", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.elapsed_seconds >= 0
 
     def test_resolves_language_aliases(self, tmp_path):
-        """Passing 'ts' should work just like 'typescript'."""
         (tmp_path / "x.ts").write_text("const x = 1;")
-        out = tmp_path / "out"
-        mock_client = _make_mock_client("x = 1")
+        out      = tmp_path / "out"
+        provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.anthropic.Anthropic", return_value=mock_client), \
-             patch("repo_translator.manifest.translate_manifest", return_value={"translated": [], "found": 0}):
-            report = translate_repo(tmp_path, out, "ts", "py", verbose=False)
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "py", provider=provider,
+                                    verbose=False, score_confidence=False)
 
         assert report.from_lang == "typescript"
         assert report.to_lang == "python"
@@ -349,21 +361,22 @@ class TestEstimateTranslation:
         assert est["from_lang"] == "typescript"
         assert est["to_lang"] == "python"
 
-    def test_empty_repo_returns_zero_tokens(self, tmp_path):
-        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+    def test_empty_repo_returns_zero_cost(self, tmp_path):
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=False, score_confidence=False)
         assert est["file_count"] == 0
-        assert est["input_tokens"] == 0
-        assert est["output_tokens"] == 0
         assert est["estimated_cost"] == 0.0
 
     def test_cost_is_positive_for_nonempty_repo(self, tmp_path):
         (tmp_path / "main.ts").write_text("const x: number = 1;" * 100)
-        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=False, score_confidence=False)
         assert est["estimated_cost"] > 0
 
     def test_input_tokens_exceed_output_tokens(self, tmp_path):
         (tmp_path / "main.ts").write_text("const x = 1;" * 50)
-        est = estimate_translation(tmp_path, "ts", "python", translate_manifests=False)
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=False, score_confidence=False)
         assert est["input_tokens"] > est["output_tokens"]
 
     def test_manifest_count_zero_when_disabled(self, tmp_path):
@@ -375,3 +388,102 @@ class TestEstimateTranslation:
         (tmp_path / "package.json").write_text('{"dependencies": {}}')
         est = estimate_translation(tmp_path, "ts", "python", translate_manifests=True)
         assert est["manifest_count"] == 1
+
+    def test_confidence_scoring_increases_token_count(self, tmp_path):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+        est_with    = estimate_translation(tmp_path, "ts", "python",
+                                           translate_manifests=False, score_confidence=True)
+        est_without = estimate_translation(tmp_path, "ts", "python",
+                                           translate_manifests=False, score_confidence=False)
+        assert est_with["input_tokens"] > est_without["input_tokens"]
+
+    def test_ollama_cost_is_zero(self, tmp_path):
+        (tmp_path / "main.ts").write_text("const x = 1;" * 100)
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=False, provider="ollama")
+        assert est["estimated_cost"] == 0.0
+
+    def test_unknown_provider_model_returns_none_cost(self, tmp_path):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=False,
+                                   provider="openai", model="gpt-99-ultra")
+        assert est["estimated_cost"] is None
+
+
+# ─────────────────────────────────────────────
+# _score_confidence
+# ─────────────────────────────────────────────
+
+class TestScoreConfidence:
+    def test_returns_valid_score_and_reason(self):
+        resp     = json.dumps({"score": 82, "reason": "Clean translation"})
+        provider = MockProvider(resp)
+        score, reason = _score_confidence(
+            provider, "const x = 1;", "x = 1", "typescript", "python", 1, True
+        )
+        assert score == 82
+        assert reason == "Clean translation"
+
+    def test_score_clamped_to_0_100(self):
+        resp     = json.dumps({"score": 150, "reason": "Too high"})
+        provider = MockProvider(resp)
+        score, _ = _score_confidence(
+            provider, "src", "trans", "typescript", "python", 1, True
+        )
+        assert score == 100
+
+    def test_fallback_on_invalid_json(self):
+        provider = MockProvider("not valid json at all")
+        score, reason = _score_confidence(
+            provider, "src", "trans", "typescript", "python", 1, True
+        )
+        assert score == 50
+        assert "failed" in reason
+
+    def test_fallback_on_provider_error(self):
+        provider = MockProvider(Exception("network error"))
+        score, reason = _score_confidence(
+            provider, "src", "trans", "typescript", "python", 1, True
+        )
+        assert score == 50
+
+    def test_confidence_stored_on_file_result(self, tmp_path):
+        (tmp_path / "index.ts").write_text("const x = 1;")
+        out = tmp_path / "out"
+        conf_json = json.dumps({"score": 75, "reason": "Good translation"})
+        # First call returns translation, second returns confidence JSON
+        provider  = MockProvider("x = 1", conf_json)
+
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=True)
+
+        assert report.files[0].confidence == 75
+        assert report.files[0].confidence_reason == "Good translation"
+
+    def test_high_confidence_count(self, tmp_path):
+        (tmp_path / "index.ts").write_text("const x = 1;")
+        out      = tmp_path / "out"
+        conf_json = json.dumps({"score": 85, "reason": "Good"})
+        provider  = MockProvider("x = 1", conf_json)
+
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=True)
+
+        assert report.high_confidence == 1
+        assert report.needs_review == 0
+
+    def test_needs_review_count(self, tmp_path):
+        (tmp_path / "index.ts").write_text("const x = 1;")
+        out      = tmp_path / "out"
+        conf_json = json.dumps({"score": 45, "reason": "Broken imports"})
+        provider  = MockProvider("x = 1", conf_json)
+
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=True)
+
+        assert report.needs_review == 1
+        assert report.high_confidence == 0

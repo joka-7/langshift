@@ -1,19 +1,19 @@
 """
-Core translation agent — reads files, translates via Claude API, runs & fixes.
+Core translation agent — reads files, translates via LLM provider, runs & fixes.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import textwrap
 import time
 from pathlib import Path
 
-import anthropic
-
-from repo_translator.report import TranslationReport, FileResult
+from repo_translator.providers.base import LLMProvider
 from repo_translator.manifest import translate_manifest, _find_manifests
+from repo_translator.report import TranslationReport, FileResult
 
 # ---------------------------------------------------------------------------
 # Language metadata
@@ -156,20 +156,16 @@ SKIP_DIRS = {
 
 
 def _is_test_file(path: Path, lang: str) -> bool:
-    """Return True if the file looks like a test file for the given language."""
     patterns = LANGUAGE_META[lang].get("test_patterns", [])
     name = path.name
     for pattern in patterns:
         if pattern.startswith("."):
-            # suffix pattern like ".test.ts"
             if name.endswith(pattern):
                 return True
         elif pattern.endswith(".py") or pattern.endswith(".go") or "." in pattern:
-            # suffix filename like "_test.go", "Test.java"
             if name.endswith(pattern):
                 return True
         else:
-            # prefix pattern like "test_"
             if name.startswith(pattern):
                 return True
     return False
@@ -187,30 +183,43 @@ def collect_files(repo_path: Path, from_lang: str) -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
-# Claude translation
+# Provider defaults + pricing
 # ---------------------------------------------------------------------------
 
+DEFAULT_PROVIDER = "claude"
+DEFAULT_MODEL    = "sonnet"
 MAX_FIX_ATTEMPTS = 3
-_CHARS_PER_TOKEN      = 4    # rough approximation
-_PROMPT_OVERHEAD_TOKS = 200  # prompt boilerplate per file
+_CHARS_PER_TOKEN      = 4
+_PROMPT_OVERHEAD_TOKS = 200
 
-# Supported models: friendly name → (model id, input $/MTok, output $/MTok)
-MODELS: dict[str, tuple[str, float, float]] = {
-    "haiku":  ("claude-haiku-4-5-20251001",  0.80,  4.00),
-    "sonnet": ("claude-sonnet-4-6",           3.00, 15.00),
-    "opus":   ("claude-opus-4-8",            15.00, 75.00),
+# (provider, model_name) → (input $/MTok, output $/MTok)
+PRICING: dict[tuple[str, str], tuple[float, float]] = {
+    ("claude", "haiku"):              (0.80,  4.00),
+    ("claude", "sonnet"):             (3.00, 15.00),
+    ("claude", "opus"):               (15.00, 75.00),
+    ("openai", "gpt-4o"):             (5.00, 15.00),
+    ("openai", "gpt-4o-mini"):        (0.15,  0.60),
+    ("openai", "gpt-4-turbo"):        (10.00, 30.00),
+    ("gemini", "gemini-1.5-pro"):     (3.50, 10.50),
+    ("gemini", "gemini-1.5-flash"):   (0.35,  1.05),
+    ("gemini", "gemini-2.0-flash"):   (0.10,  0.40),
 }
-DEFAULT_MODEL = "sonnet"
+# Confidence scoring: extra tokens per file (truncated src + translated + prompt)
+_CONFIDENCE_INPUT_TOKS  = 1200
+_CONFIDENCE_OUTPUT_TOKS = 60
 
+
+# ---------------------------------------------------------------------------
+# Translation helpers
+# ---------------------------------------------------------------------------
 
 def _translate_once(
-    client: anthropic.Anthropic,
+    provider: LLMProvider,
     source_code: str,
     from_lang: str,
     to_lang: str,
     is_test: bool = False,
     error_context: str | None = None,
-    model_id: str = MODELS[DEFAULT_MODEL][0],
 ) -> str:
     fix_note = ""
     if error_context:
@@ -247,12 +256,61 @@ def _translate_once(
         ```
     """).strip()
 
-    message = client.messages.create(
-        model=model_id,
-        max_tokens=8096,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text.strip()
+    return provider.complete(prompt, max_tokens=8096)
+
+
+def _score_confidence(
+    provider: LLMProvider,
+    source_code: str,
+    translated_code: str,
+    from_lang: str,
+    to_lang: str,
+    attempts: int,
+    run_ok: bool,
+) -> tuple[int, str]:
+    """Ask the provider to score the translation quality 0-100."""
+    todo_count = translated_code.lower().count("# todo") + translated_code.lower().count("// todo")
+    src_excerpt   = source_code[:2000]   + ("…" if len(source_code)   > 2000 else "")
+    trans_excerpt = translated_code[:2000] + ("…" if len(translated_code) > 2000 else "")
+
+    prompt = textwrap.dedent(f"""
+        You just translated a {from_lang} file to {to_lang}. Score the translation 0–100.
+
+        Consider:
+        - Constructs with no direct equivalent ({from_lang} → {to_lang}): goroutines, ownership, generics, async differences, etc.
+        - Cross-file imports that may be broken — this file was translated in isolation with no knowledge of other files in the repo.
+        - TODO comments added: {todo_count}
+        - Auto-run: {"passed" if run_ok else "failed"}, attempts needed: {attempts}
+        - Structural distance between {from_lang} and {to_lang}
+
+        Be honest about real-world usability. A file that runs but has broken cross-file imports should score 40–60, not 90.
+
+        Source ({from_lang}):
+        ```
+        {src_excerpt}
+        ```
+
+        Translation ({to_lang}):
+        ```
+        {trans_excerpt}
+        ```
+
+        Respond with JSON only, no markdown fences:
+        {{"score": <0-100>, "reason": "<one sentence>"}}
+    """).strip()
+
+    try:
+        raw = provider.complete(prompt, max_tokens=256).strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        data   = json.loads(raw.strip())
+        score  = max(0, min(100, int(data["score"])))
+        reason = str(data.get("reason", ""))[:200]
+        return score, reason
+    except Exception:
+        return 50, "confidence scoring failed"
 
 
 def _try_run(to_lang: str, code: str) -> tuple[bool, str]:
@@ -287,7 +345,6 @@ def _try_run(to_lang: str, code: str) -> tuple[bool, str]:
 
 
 def run_tests(output_path: Path, to_lang: str, verbose: bool = True) -> tuple[bool, str]:
-    """Run the test suite in the translated output directory. Returns (passed, output)."""
     test_runner = LANGUAGE_META[to_lang].get("test_runner")
     if not test_runner:
         return True, "(test runner not configured for this language)"
@@ -342,16 +399,14 @@ def estimate_translation(
     from_lang: str,
     to_lang: str,
     translate_manifests: bool = True,
+    provider: str = DEFAULT_PROVIDER,
     model: str = DEFAULT_MODEL,
+    score_confidence: bool = True,
 ) -> dict:
     """Estimate token usage and cost without making any API calls."""
     from_lang = resolve_language(from_lang)
     to_lang   = resolve_language(to_lang)
     files     = collect_files(repo_path, from_lang)
-
-    if model not in MODELS:
-        raise ValueError(f"Unknown model '{model}'. Choose from: {', '.join(MODELS)}")
-    _, input_price, output_price = MODELS[model]
 
     src_chars = 0
     for f in files:
@@ -373,14 +428,28 @@ def estimate_translation(
     total_calls = len(files) + manifest_count
     input_toks  = (src_chars + manifest_chars) // _CHARS_PER_TOKEN + total_calls * _PROMPT_OVERHEAD_TOKS
     output_toks = (src_chars + manifest_chars) // _CHARS_PER_TOKEN
-    cost_usd    = (
-        input_toks  / 1_000_000 * input_price +
-        output_toks / 1_000_000 * output_price
-    )
+
+    if score_confidence:
+        input_toks  += len(files) * _CONFIDENCE_INPUT_TOKS
+        output_toks += len(files) * _CONFIDENCE_OUTPUT_TOKS
+
+    if provider == "ollama":
+        cost_usd: float | None = 0.0
+    else:
+        pricing = PRICING.get((provider, model))
+        if pricing:
+            inp_price, out_price = pricing
+            cost_usd = (
+                input_toks  / 1_000_000 * inp_price +
+                output_toks / 1_000_000 * out_price
+            )
+        else:
+            cost_usd = None  # unknown pricing
 
     return {
         "from_lang":      from_lang,
         "to_lang":        to_lang,
+        "provider":       provider,
         "model":          model,
         "file_count":     len(files),
         "manifest_count": manifest_count,
@@ -399,20 +468,14 @@ def translate_repo(
     output_path: Path,
     from_lang: str,
     to_lang: str,
-    api_key: str | None = None,
+    provider: LLMProvider,
     verbose: bool = True,
     translate_manifests: bool = True,
     run_tests_after: bool = False,
-    model: str = DEFAULT_MODEL,
+    score_confidence: bool = True,
 ) -> TranslationReport:
     from_lang = resolve_language(from_lang)
     to_lang   = resolve_language(to_lang)
-
-    if model not in MODELS:
-        raise ValueError(f"Unknown model '{model}'. Choose from: {', '.join(MODELS)}")
-    model_id = MODELS[model][0]
-
-    client = anthropic.Anthropic(api_key=api_key)
 
     report = TranslationReport(
         from_lang=from_lang,
@@ -426,7 +489,7 @@ def translate_repo(
     # ── 1. Translate manifests ─────────────────────────────────────────────
     if translate_manifests:
         manifest_result = translate_manifest(
-            client, repo_path, output_path, from_lang, to_lang, verbose=verbose, model_id=model_id,
+            provider, repo_path, output_path, from_lang, to_lang, verbose=verbose,
         )
         report.manifest_translated = manifest_result.get("translated", [])
 
@@ -438,19 +501,19 @@ def translate_repo(
         report.elapsed_seconds = time.time() - start
         return report
 
-    test_files  = [f for f in files if _is_test_file(f, from_lang)]
-    src_files   = [f for f in files if not _is_test_file(f, from_lang)]
+    test_files = [f for f in files if _is_test_file(f, from_lang)]
+    src_files  = [f for f in files if not _is_test_file(f, from_lang)]
 
     if verbose:
         print(f"\n  Found {len(src_files)} source + {len(test_files)} test file(s) → {to_lang}\n")
 
     # ── 3. Translate each file ─────────────────────────────────────────────
     for i, src_file in enumerate(files, 1):
-        rel      = src_file.relative_to(repo_path)
-        dest     = _output_path(src_file, repo_path, output_path, to_lang)
+        rel     = src_file.relative_to(repo_path)
+        dest    = _output_path(src_file, repo_path, output_path, to_lang)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        is_test  = _is_test_file(src_file, from_lang)
-        tag      = " [test]" if is_test else ""
+        is_test = _is_test_file(src_file, from_lang)
+        tag     = " [test]" if is_test else ""
 
         if verbose:
             print(f"  [{i}/{len(files)}] {rel}{tag}", end=" ", flush=True)
@@ -467,36 +530,48 @@ def translate_repo(
         error_ctx  = None
         final_code = ""
         attempts   = 0
+        run_ok     = False
 
         for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
             attempts = attempt
             try:
                 translated_code = _translate_once(
-                    client, source_code, from_lang, to_lang,
-                    is_test=is_test, error_context=error_ctx, model_id=model_id,
+                    provider, source_code, from_lang, to_lang,
+                    is_test=is_test, error_context=error_ctx,
                 )
             except Exception as e:
                 if verbose:
                     print(f"→ ✗ API error: {e}")
                 report.files.append(FileResult(
                     path=str(rel), status="failed",
-                    attempts=attempt, error=str(e)
+                    attempts=attempt, error=str(e),
                 ))
                 break
 
             ok, run_output = _try_run(to_lang, translated_code)
             final_code = translated_code
+            run_ok     = ok
 
             if ok:
                 dest.write_text(final_code, encoding="utf-8")
                 status = "ok" if attempt == 1 else "ok_with_warnings"
+
+                confidence, confidence_reason = None, None
+                if score_confidence:
+                    confidence, confidence_reason = _score_confidence(
+                        provider, source_code, final_code,
+                        from_lang, to_lang, attempts, run_ok,
+                    )
+
                 report.files.append(FileResult(
                     path=str(rel), status=status,
-                    attempts=attempt, run_output=run_output
+                    attempts=attempt, run_output=run_output,
+                    confidence=confidence, confidence_reason=confidence_reason,
                 ))
                 if verbose:
                     extra = f" (fixed in {attempt} attempt(s))" if attempt > 1 else ""
-                    print(f"→ ✓{extra}")
+                    conf  = f"  confidence {confidence}/100" if confidence is not None else ""
+                    print(f"→ ✓{extra}{conf}")
                 break
             else:
                 error_ctx = run_output
@@ -509,9 +584,18 @@ def translate_repo(
                     f"# Last error: {(error_ctx or '').splitlines()[0][:120]}\n\n"
                 )
                 dest.write_text(warning + final_code, encoding="utf-8")
+
+                confidence, confidence_reason = None, None
+                if score_confidence:
+                    confidence, confidence_reason = _score_confidence(
+                        provider, source_code, final_code,
+                        from_lang, to_lang, attempts, run_ok,
+                    )
+
                 report.files.append(FileResult(
                     path=str(rel), status="ok_with_warnings",
-                    attempts=attempts, error=error_ctx
+                    attempts=attempts, error=error_ctx,
+                    confidence=confidence, confidence_reason=confidence_reason,
                 ))
                 if verbose:
                     print(f"→ ✓ (saved with warnings after {MAX_FIX_ATTEMPTS} attempts)")
