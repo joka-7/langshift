@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repo_translator.providers.base import LLMProvider
+from repo_translator.providers.retry import complete_with_backoff
 
 # Maps from_lang → list of manifest filenames to look for
 MANIFEST_FILES: dict[str, list[str]] = {
@@ -90,7 +91,7 @@ Source ({from_lang} - {manifest.name}):
 """
 
         try:
-            translated_content = provider.complete(prompt, max_tokens=4096)
+            translated_content = complete_with_backoff(provider, prompt, max_tokens=4096)
 
             dest_dir = output_path / rel.parent
             dest_dir.mkdir(parents=True, exist_ok=True)

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from repo_translator.providers.base import LLMProvider
+from repo_translator.providers.retry import complete_with_backoff
 from repo_translator.manifest import translate_manifest, _find_manifests
 from repo_translator.report import TranslationReport, FileResult
 
@@ -262,7 +263,7 @@ def _translate_once(
         ```
     """).strip()
 
-    return provider.complete(prompt, max_tokens=8096)
+    return complete_with_backoff(provider, prompt, max_tokens=8096)
 
 
 def _score_confidence(
@@ -306,7 +307,7 @@ def _score_confidence(
     """).strip()
 
     try:
-        raw = provider.complete(prompt, max_tokens=256).strip()
+        raw = complete_with_backoff(provider, prompt, max_tokens=256).strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
