@@ -68,6 +68,19 @@ class TestIsRateLimitError:
     def test_does_not_match_model_error(self):
         assert not is_rate_limit_error(Exception("model not found"))
 
+    def test_does_not_match_413_too_large(self):
+        assert not is_rate_limit_error(Exception(
+            "Error code: 413 - Request too large for model on tokens per minute (TPM): Limit 6000, Requested 8488"
+        ))
+
+    def test_does_not_retry_413_in_complete_with_backoff(self):
+        err = Exception("Error code: 413 - Request too large for model on TPM: Limit 6000, Requested 9000")
+        provider = MockProvider(err, "ok")
+        with patch("repo_translator.providers.retry.time.sleep") as mock_sleep:
+            with pytest.raises(Exception, match="413"):
+                complete_with_backoff(provider, "prompt")
+        mock_sleep.assert_not_called()
+
 
 # ─────────────────────────────────────────────
 # parse_retry_after

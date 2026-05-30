@@ -21,6 +21,9 @@ _BASE_WAIT  = 1     # exponential-backoff base (doubles each attempt)
 
 def is_rate_limit_error(e: Exception) -> bool:
     msg = str(e).lower()
+    # 413 = request physically too large — retrying won't help, exclude it
+    if "413" in msg or "request too large" in msg:
+        return False
     return (
         "429" in msg
         or "rate_limit" in msg
