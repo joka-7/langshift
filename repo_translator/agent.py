@@ -205,11 +205,10 @@ PRICING: dict[tuple[str, str], tuple[float, float]] = {
     ("gemini",  "gemini-1.5-pro"):              (3.50,  10.50),
     ("gemini",  "gemini-1.5-flash"):            (0.35,   1.05),
     ("gemini",  "gemini-2.0-flash"):            (0.10,   0.40),
-    ("groq",    "llama-3.1-70b-versatile"):     (0.59,   0.79),
+    ("groq",    "llama-3.3-70b-versatile"):     (0.59,   0.79),
     ("groq",    "llama-3.1-8b-instant"):        (0.05,   0.08),
-    ("groq",    "llama3-70b-8192"):             (0.59,   0.79),
-    ("groq",    "mixtral-8x7b-32768"):          (0.24,   0.24),
-    ("groq",    "gemma-7b-it"):                 (0.07,   0.07),
+    ("groq",    "qwen/qwen3-32b"):              (0.29,   0.59),
+    ("groq",    "meta-llama/llama-4-scout-17b-16e-instruct"): (0.11, 0.34),
 }
 # Confidence scoring: extra tokens per file (truncated src + translated + prompt)
 _CONFIDENCE_INPUT_TOKS  = 1200
