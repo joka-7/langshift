@@ -440,9 +440,9 @@ def estimate_translation(
         input_toks  += len(files) * _CONFIDENCE_INPUT_TOKS
         output_toks += len(files) * _CONFIDENCE_OUTPUT_TOKS
 
-    if provider in ("ollama", "openai-compat"):
-        # ollama is local/free; openai-compat pricing varies by service
-        cost_usd: float | None = 0.0 if provider == "ollama" else None
+    if provider in ("ollama", "openai-compat", "offline"):
+        # ollama/offline are free; openai-compat pricing varies by service
+        cost_usd: float | None = 0.0 if provider in ("ollama", "offline") else None
     else:
         pricing = PRICING.get((provider, model))
         if pricing:

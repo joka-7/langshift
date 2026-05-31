@@ -6,8 +6,9 @@ from repo_translator.providers.gemini import GeminiProvider
 from repo_translator.providers.ollama import OllamaProvider
 from repo_translator.providers.groq import GroqProvider
 from repo_translator.providers.openai_compat import OpenAICompatProvider
+from repo_translator.providers.offline import OfflineProvider
 
-SUPPORTED_PROVIDERS = ("claude", "openai", "gemini", "ollama", "groq", "openai-compat")
+SUPPORTED_PROVIDERS = ("claude", "openai", "gemini", "ollama", "groq", "openai-compat", "offline")
 
 
 def make_provider(
@@ -35,6 +36,22 @@ def make_provider(
                 "            --base-url https://openrouter.ai/api/v1"
             )
         return OpenAICompatProvider(model_id=model, base_url=base_url, api_key=api_key)
+    if provider == "offline":
+        raise ValueError(
+            "Use make_offline_provider(from_lang, to_lang) for the offline provider."
+        )
     raise ValueError(
         f"Unknown provider '{provider}'. Supported: {', '.join(SUPPORTED_PROVIDERS)}"
     )
+
+
+def make_offline_provider(from_lang: str, to_lang: str) -> OfflineProvider:
+    """Create an offline rule-based provider for the given language pair."""
+    from repo_translator.offline.transformer import OfflineTransformer
+    if not OfflineTransformer.supports(from_lang, to_lang):
+        pairs = ', '.join(OfflineTransformer.supported_pairs())
+        raise ValueError(
+            f"No offline transformer for {from_lang} → {to_lang}.\n"
+            f"  Supported pairs: {pairs}"
+        )
+    return OfflineProvider(from_lang=from_lang, to_lang=to_lang)

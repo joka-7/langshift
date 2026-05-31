@@ -18,7 +18,8 @@ from repo_translator.agent import (
     translate_repo,
     estimate_translation,
 )
-from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider
+from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider, make_offline_provider
+from repo_translator.agent import resolve_language
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,7 +102,9 @@ def main() -> None:
 
     # Pricing label for display
     pricing_info = PRICING.get((args.provider, args.model))
-    if args.provider == "ollama":
+    if args.provider == "offline":
+        price_label = "free (no API — rule-based offline)"
+    elif args.provider == "ollama":
         price_label = "free (local)"
     elif args.provider == "groq" and not pricing_info:
         price_label = "free tier (rate-limited)"
@@ -162,7 +165,12 @@ def main() -> None:
                 sys.exit(0)
 
     try:
-        provider = make_provider(args.provider, args.model, args.api_key, args.base_url)
+        if args.provider == "offline":
+            from_resolved = resolve_language(from_key)
+            to_resolved   = resolve_language(to_key)
+            provider = make_offline_provider(from_resolved, to_resolved)
+        else:
+            provider = make_provider(args.provider, args.model, args.api_key, args.base_url)
     except (ImportError, ValueError) as e:
         print(f"Error: {e}")
         sys.exit(1)
