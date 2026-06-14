@@ -196,9 +196,15 @@ def _transform_line(line: str, ctx: _Context) -> tuple[str, set[str]]:
     ind = _indent(line)
     s   = line.strip()
 
-    # Blank / comment lines — pass through
-    if not s or s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+    # Blank lines — pass through
+    if not s:
         return line, needed
+
+    # Comment lines
+    if s.startswith('//'):
+        return ind + '# ' + s[2:].lstrip(), needed
+    if s.startswith('*') or s.startswith('/*'):
+        return ind + '# ' + re.sub(r'^/?\*+/?', '', s).strip(), needed
 
     # ── Imports ──────────────────────────────────────────────────────────
     if s.startswith('import '):

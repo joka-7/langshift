@@ -540,7 +540,8 @@ def translate_repo(
         attempts   = 0
         run_ok     = False
 
-        for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
+        fix_attempts = getattr(provider, 'max_fix_attempts', MAX_FIX_ATTEMPTS)
+        for attempt in range(1, fix_attempts + 1):
             attempts = attempt
             try:
                 translated_code = _translate_once(
@@ -583,12 +584,12 @@ def translate_repo(
                 break
             else:
                 error_ctx = run_output
-                if verbose and attempt < MAX_FIX_ATTEMPTS:
+                if verbose and attempt < fix_attempts:
                     print(f"\n    ↺ attempt {attempt} failed, retrying...", end=" ", flush=True)
         else:
             if final_code:
                 warning = (
-                    f"# WARNING: auto-run failed after {MAX_FIX_ATTEMPTS} attempts.\n"
+                    f"# WARNING: auto-run failed after {fix_attempts} attempts.\n"
                     f"# Last error: {(error_ctx or '').splitlines()[0][:120]}\n\n"
                 )
                 dest.write_text(warning + final_code, encoding="utf-8")

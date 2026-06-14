@@ -13,6 +13,8 @@ from repo_translator.offline.transformer import OfflineTransformer
 
 
 class OfflineProvider(LLMProvider):
+    max_fix_attempts = 1   # rule-based: retrying produces identical output
+
     """
     Implements LLMProvider without any network calls.
 
