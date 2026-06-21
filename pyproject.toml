@@ -45,6 +45,9 @@ all-providers = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+markers = [
+    "integration: exercises real subprocesses / file I/O / HTTP instead of mocks",
+]
 
 [project.scripts]
 repo-translate = "repo_translator.cli:main"
