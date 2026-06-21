@@ -84,11 +84,6 @@ jobs:
 
   codeql:
     runs-on: ubuntu-latest
-    # Non-blocking: CodeQL analysis runs and reports, but the result upload
-    # requires "Code scanning" to be enabled in the repository settings. Until
-    # that is enabled, the upload step errors — continue-on-error keeps it from
-    # failing the overall CI run while still surfacing the analysis.
-    continue-on-error: true
     permissions:
       actions: read
       contents: read
@@ -108,6 +103,12 @@ jobs:
         uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL analysis
+        # Non-blocking until "Code scanning" is enabled in the repository
+        # settings: the analysis runs, but its SARIF upload step errors with
+        # "Code scanning is not enabled for this repository". continue-on-error
+        # on this step lets the job conclude successfully (green check) while
+        # still running the analysis. Once code scanning is enabled, remove this.
+        continue-on-error: true
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"

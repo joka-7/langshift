@@ -11,22 +11,20 @@ export default defineConfig({
   workers: 1,
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL: 'http://127.0.0.1:8765',
     trace: 'retain-on-failure',
   },
-  webServer: [
-    {
-      command: 'python -m uvicorn repo_translator.webui.main:app --host 127.0.0.1 --port 8765',
-      cwd: path.join(__dirname, '..'),
-      url: 'http://127.0.0.1:8765/api/languages',
-      reuseExistingServer: false,
-      env: { REPO_TRANSLATOR_DATA_DIR: E2E_DATA_DIR },
-    },
-    {
-      command: 'npm run dev -- --port 5173 --strictPort',
-      cwd: __dirname,
-      url: 'http://127.0.0.1:5173',
-      reuseExistingServer: false,
-    },
-  ],
+  // Build the SPA, then serve it from the FastAPI process itself (main.py mounts
+  // frontend/dist at /). A single same-origin server is far more robust in CI than
+  // running the Vite dev server and the API as two separate webServers, and it
+  // exercises the actual production build. `python`/uvicorn import the editable-
+  // installed repo_translator package, so cwd here only matters for `npm run build`.
+  webServer: {
+    command: 'npm run build && python -m uvicorn repo_translator.webui.main:app --host 127.0.0.1 --port 8765',
+    cwd: __dirname,
+    url: 'http://127.0.0.1:8765/api/languages',
+    reuseExistingServer: false,
+    timeout: 120_000,
+    env: { REPO_TRANSLATOR_DATA_DIR: E2E_DATA_DIR },
+  },
 })
