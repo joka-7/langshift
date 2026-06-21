@@ -84,6 +84,11 @@ jobs:
 
   codeql:
     runs-on: ubuntu-latest
+    # Non-blocking: CodeQL analysis runs and reports, but the result upload
+    # requires "Code scanning" to be enabled in the repository settings. Until
+    # that is enabled, the upload step errors — continue-on-error keeps it from
+    # failing the overall CI run while still surfacing the analysis.
+    continue-on-error: true
     permissions:
       actions: read
       contents: read
