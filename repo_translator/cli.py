@@ -11,12 +11,12 @@ from pathlib import Path
 
 from repo_translator.agent import (
     LANGUAGE_META,
-    PRICING,
     DEFAULT_PROVIDER,
     DEFAULT_MODEL,
     _ALIAS_MAP,
     translate_repo,
     estimate_translation,
+    price_label,
 )
 from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider, make_offline_provider
 from repo_translator.agent import resolve_language
@@ -101,21 +101,7 @@ def main() -> None:
     )
 
     # Pricing label for display
-    pricing_info = PRICING.get((args.provider, args.model))
-    if args.provider == "offline":
-        price_label = "free (no API — rule-based offline)"
-    elif args.provider == "ollama":
-        price_label = "free (local)"
-    elif args.provider == "groq" and not pricing_info:
-        price_label = "free tier (rate-limited)"
-    elif args.provider == "groq" and pricing_info:
-        price_label = f"${pricing_info[0]:.2f}/${pricing_info[1]:.2f} per MTok  (free tier available)"
-    elif args.provider == "openai-compat":
-        price_label = f"varies by service  ({args.base_url or 'no --base-url set'})"
-    elif pricing_info:
-        price_label = f"${pricing_info[0]:.2f}/${pricing_info[1]:.2f} per MTok in/out"
-    else:
-        price_label = "pricing unknown"
+    price = price_label(args.provider, args.model, args.base_url)
 
     print(f"""
 ╔══════════════════════════════════════════════╗
@@ -125,7 +111,7 @@ def main() -> None:
   Input    : {input_path}
   From     : {_ALIAS_MAP[from_key]}
   To       : {_ALIAS_MAP[to_key]}
-  Provider : {args.provider} / {args.model}  ({price_label})
+  Provider : {args.provider} / {args.model}  ({price})
   Output   : {output_path}
 """)
 

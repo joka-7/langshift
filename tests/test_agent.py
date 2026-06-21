@@ -24,6 +24,7 @@ from repo_translator.agent import (
     _score_confidence,
     collect_files,
     estimate_translation,
+    price_label,
     resolve_language,
     translate_repo,
 )
@@ -344,6 +345,76 @@ class TestTranslateRepo:
 
         assert report.from_lang == "typescript"
         assert report.to_lang == "python"
+
+
+class TestPriceLabel:
+    def test_offline_is_free(self):
+        assert "free" in price_label("offline", "sonnet")
+
+    def test_ollama_is_free_local(self):
+        assert "local" in price_label("ollama", "llama3")
+
+    def test_groq_known_model_shows_price(self):
+        assert "$" in price_label("groq", "llama-3.3-70b-versatile")
+
+    def test_groq_unknown_model_shows_free_tier(self):
+        assert "free tier" in price_label("groq", "some-new-model")
+
+    def test_openai_compat_shows_base_url(self):
+        label = price_label("openai-compat", "any-model", base_url="https://api.example.com")
+        assert "https://api.example.com" in label
+
+    def test_claude_known_model_shows_price(self):
+        assert "$" in price_label("claude", "sonnet")
+
+    def test_unknown_pricing(self):
+        assert price_label("openai", "some-future-model") == "pricing unknown"
+
+
+class TestTranslateRepoProgress:
+    """on_progress is the hook the web UI streams off of."""
+
+    def test_emits_file_start_and_done(self, tmp_path):
+        (tmp_path / "index.ts").write_text("const x = 1;")
+        out      = tmp_path / "out"
+        provider = MockProvider("x = 1")
+        events: list[dict] = []
+
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                           verbose=False, score_confidence=False, on_progress=events.append)
+
+        types = [e["type"] for e in events]
+        assert "file_start" in types
+        assert "file_done" in types
+        assert types[-1] == "finished"
+
+        done = next(e for e in events if e["type"] == "file_done")
+        assert done["path"] == "index.ts"
+        assert done["status"] == "ok"
+
+    def test_emits_finished_summary_even_with_no_files(self, tmp_path):
+        out      = tmp_path / "out"
+        provider = MockProvider()
+        events: list[dict] = []
+
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                           verbose=False, score_confidence=False, on_progress=events.append)
+
+        assert events[-1]["type"] == "finished"
+        assert events[-1]["summary"]["total"] == 0
+
+    def test_no_progress_callback_is_a_no_op(self, tmp_path):
+        (tmp_path / "index.ts").write_text("const x = 1;")
+        out      = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    verbose=False, score_confidence=False)
+
+        assert report.translated == 1
 
 
 # ─────────────────────────────────────────────
