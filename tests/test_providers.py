@@ -111,12 +111,8 @@ class TestGroqProvider:
         mock_client.chat.completions.create.return_value.choices = [
             MagicMock(message=MagicMock(content="translated"))
         ]
-        with patch("repo_translator.providers.groq._groq" if hasattr(GroqProvider, "_groq") else
-                   "repo_translator.providers.groq.GroqProvider.__init__", return_value=None):
-            import groq as _groq_mod
-            with patch("repo_translator.providers.groq._groq", create=True):
-                pass
-        # Simpler: patch at import level
+        # The groq SDK is mocked entirely via sys.modules, so this test does not
+        # require the real `groq` package to be installed.
         mock_groq_mod = MagicMock()
         mock_groq_mod.Groq.return_value = mock_client
         with patch.dict("sys.modules", {"groq": mock_groq_mod}):
