@@ -19,6 +19,7 @@ from repo_translator.agent import (
     SKIP_DIRS,
     _ALIAS_MAP,
     _output_path,
+    _translate_once,
     _try_run,
     _score_confidence,
     collect_files,
@@ -487,3 +488,53 @@ class TestScoreConfidence:
 
         assert report.needs_review == 1
         assert report.high_confidence == 0
+
+
+# ─────────────────────────────────────────────
+# Prompt construction — regression: source code must not be re-indented
+# ─────────────────────────────────────────────
+
+class CapturingProvider(LLMProvider):
+    """Records the last prompt it was given and echoes a fixed response."""
+    def __init__(self, response: str = "x = 1"):
+        self.last_prompt: str | None = None
+        self._response = response
+
+    def complete(self, prompt: str, max_tokens: int = 8096) -> str:
+        self.last_prompt = prompt
+        return self._response
+
+
+class TestTranslateOncePrompt:
+    """
+    Regression for the textwrap.dedent bug: when source_code was interpolated
+    *inside* the dedented template, its un-indented lines defeated dedent's
+    common-prefix calc and leaked 8 spaces of template indentation into the
+    fenced code block — producing invalid Python from the offline provider.
+    """
+
+    def _code_block(self, prompt: str) -> str:
+        # Extract the content between the last pair of ``` fences.
+        first = prompt.index("```") + 3
+        first = prompt.index("\n", first) + 1
+        last  = prompt.index("```", first)
+        return prompt[first:last]
+
+    def test_source_lines_not_reindented(self):
+        source = "function add(a, b) {\n  return a + b;\n}\nconsole.log(add(2, 3));\n"
+        provider = CapturingProvider()
+        _translate_once(provider, source, "typescript", "python")
+
+        block = self._code_block(provider.last_prompt)
+        # The original zero-indent lines must remain at zero indent.
+        assert "function add(a, b) {" in block
+        assert "\nconsole.log(add(2, 3));" in block
+        assert "        function add" not in block  # no leaked template indent
+
+    def test_source_code_preserved_verbatim(self):
+        source = "const x = 1;\nconst y = 2;\n"
+        provider = CapturingProvider()
+        _translate_once(provider, source, "typescript", "python")
+
+        block = self._code_block(provider.last_prompt)
+        assert block.rstrip("\n") == source.rstrip("\n")
