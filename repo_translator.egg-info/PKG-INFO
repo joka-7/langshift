@@ -131,6 +131,34 @@ The translated code is pushed to the branch you specify (default: `translated`),
 
 ---
 
+## Web UI
+
+A local single-user web UI is available as an alternative to the CLI: pick a repo, an
+offline/online provider, see a cost estimate, kick off a translation, and watch progress
+live, then browse the translated output side-by-side with the original.
+
+```bash
+pip install -e ".[webui]"
+repo-translate-ui   # serves the API on http://127.0.0.1:8765
+```
+
+For frontend development:
+
+```bash
+cd frontend
+npm install
+npm run dev   # http://localhost:5173, proxies /api to the backend above
+```
+
+To serve the built frontend from the same process as the API:
+
+```bash
+cd frontend && npm run build   # outputs to frontend/dist
+repo-translate-ui               # now also serves the built UI at /
+```
+
+---
+
 ## Example report
 
 ```
