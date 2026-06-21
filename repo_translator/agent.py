@@ -10,6 +10,7 @@ import tempfile
 import textwrap
 import time
 from pathlib import Path
+from typing import Callable
 
 from repo_translator.providers.base import LLMProvider
 from repo_translator.providers.retry import complete_with_backoff
@@ -214,6 +215,24 @@ PRICING: dict[tuple[str, str], tuple[float, float]] = {
 # Confidence scoring: extra tokens per file (truncated src + translated + prompt)
 _CONFIDENCE_INPUT_TOKS  = 1200
 _CONFIDENCE_OUTPUT_TOKS = 60
+
+
+def price_label(provider: str, model: str, base_url: str | None = None) -> str:
+    """Human-readable pricing description for a provider/model combo."""
+    pricing_info = PRICING.get((provider, model))
+    if provider == "offline":
+        return "free (no API — rule-based offline)"
+    if provider == "ollama":
+        return "free (local)"
+    if provider == "groq" and not pricing_info:
+        return "free tier (rate-limited)"
+    if provider == "groq" and pricing_info:
+        return f"${pricing_info[0]:.2f}/${pricing_info[1]:.2f} per MTok  (free tier available)"
+    if provider == "openai-compat":
+        return f"varies by service  ({base_url or 'no base URL set'})"
+    if pricing_info:
+        return f"${pricing_info[0]:.2f}/${pricing_info[1]:.2f} per MTok in/out"
+    return "pricing unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +493,20 @@ def estimate_translation(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _summary(report: TranslationReport) -> dict:
+    return {
+        "total": report.total,
+        "translated": report.translated,
+        "failed": report.failed,
+        "skipped": report.skipped,
+        "needed_retry": report.needed_retry,
+        "high_confidence": report.high_confidence,
+        "needs_review": report.needs_review,
+        "tests_passed": report.tests_passed,
+        "elapsed_seconds": round(report.elapsed_seconds, 2),
+    }
+
+
 def translate_repo(
     repo_path: Path,
     output_path: Path,
@@ -484,7 +517,22 @@ def translate_repo(
     translate_manifests: bool = True,
     run_tests_after: bool = False,
     score_confidence: bool = True,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> TranslationReport:
+    """
+    on_progress, if given, is called with a dict for each notable event:
+      {"type": "manifest_done", "count": int}
+      {"type": "file_start", "index": int, "total": int, "path": str, "is_test": bool}
+      {"type": "file_done", "index": int, "total": int, "path": str, "status": str,
+       "attempts": int, "confidence": int | None}
+      {"type": "tests_done", "passed": bool}
+      {"type": "finished", "summary": dict}
+    Consumers (e.g. the web UI) use this to stream live progress; the CLI doesn't pass it.
+    """
+    def _emit(event: dict) -> None:
+        if on_progress:
+            on_progress(event)
+
     from_lang = resolve_language(from_lang)
     to_lang   = resolve_language(to_lang)
 
@@ -503,6 +551,7 @@ def translate_repo(
             provider, repo_path, output_path, from_lang, to_lang, verbose=verbose,
         )
         report.manifest_translated = manifest_result.get("translated", [])
+        _emit({"type": "manifest_done", "count": len(report.manifest_translated)})
 
     # ── 2. Collect source files ────────────────────────────────────────────
     files = collect_files(repo_path, from_lang)
@@ -510,6 +559,7 @@ def translate_repo(
         if verbose:
             print(f"  No {from_lang} files found in {repo_path}")
         report.elapsed_seconds = time.time() - start
+        _emit({"type": "finished", "summary": _summary(report)})
         return report
 
     test_files = [f for f in files if _is_test_file(f, from_lang)]
@@ -528,6 +578,7 @@ def translate_repo(
 
         if verbose:
             print(f"  [{i}/{len(files)}] {rel}{tag}", end=" ", flush=True)
+        _emit({"type": "file_start", "index": i, "total": len(files), "path": str(rel), "is_test": is_test})
 
         source_code = src_file.read_text(encoding="utf-8", errors="replace")
 
@@ -536,6 +587,8 @@ def translate_repo(
             report.files.append(FileResult(path=str(rel), status="skipped"))
             if verbose:
                 print("→ (empty, skipped)")
+            _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                   "status": "skipped", "attempts": 0, "confidence": None})
             continue
 
         error_ctx  = None
@@ -558,6 +611,8 @@ def translate_repo(
                     path=str(rel), status="failed",
                     attempts=attempt, error=str(e),
                 ))
+                _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                       "status": "failed", "attempts": attempt, "confidence": None})
                 break
 
             ok, run_output = _try_run(to_lang, translated_code)
@@ -584,6 +639,8 @@ def translate_repo(
                     extra = f" (fixed in {attempt} attempt(s))" if attempt > 1 else ""
                     conf  = f"  confidence {confidence}/100" if confidence is not None else ""
                     print(f"→ ✓{extra}{conf}")
+                _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                       "status": status, "attempts": attempt, "confidence": confidence})
                 break
             else:
                 error_ctx = run_output
@@ -611,12 +668,16 @@ def translate_repo(
                 ))
                 if verbose:
                     print(f"→ ✓ (saved with warnings after {MAX_FIX_ATTEMPTS} attempts)")
+                _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                       "status": "ok_with_warnings", "attempts": attempts, "confidence": confidence})
 
     # ── 4. Run translated test suite ──────────────────────────────────────
     if run_tests_after and test_files:
         passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
         report.tests_passed = passed
         report.test_output  = test_output
+        _emit({"type": "tests_done", "passed": passed})
 
     report.elapsed_seconds = time.time() - start
+    _emit({"type": "finished", "summary": _summary(report)})
     return report

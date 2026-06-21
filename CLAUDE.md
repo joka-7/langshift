@@ -26,15 +26,21 @@ repo_translator/
 ├── agent.py      — core logic: file collection, Claude API calls, auto-fix loop, test detection
 ├── manifest.py   — translates dependency files (package.json → requirements.txt etc.)
 ├── report.py     — TranslationReport dataclass, saves .json + .md summary
-└── cli.py        — argparse CLI entry point
+├── cli.py        — argparse CLI entry point
+└── webui/        — FastAPI backend for the web UI (jobs.py: background job manager +
+                     JSON history; main.py: API routes incl. SSE progress streaming)
+
+frontend/         — React + Vite SPA for the web UI (talks to webui/ over /api)
 
 tests/
-├── test_agent.py    — 39 unit tests (all Claude calls are mocked)
-├── test_manifest.py — 13 unit tests
-└── test_report.py   — 19 unit tests
+├── test_agent.py    — unit tests (all Claude calls are mocked)
+├── test_manifest.py — unit tests
+├── test_report.py   — unit tests
+└── test_webui.py    — webui backend tests (FastAPI TestClient + offline provider)
 
 .github/workflows/translate.yml — GitHub Actions: run translation via UI, push to branch
-pyproject.toml — package config, entry point: repo-translate = repo_translator.cli:main
+pyproject.toml — package config, entry points: repo-translate = repo_translator.cli:main,
+                  repo-translate-ui = repo_translator.webui.main:run (requires [webui] extra)
 ```
 
 ---

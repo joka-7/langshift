@@ -17,6 +17,11 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",
+    "httpx>=0.27",
+]
+webui = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
 ]
 openai = [
     "openai>=1.0",
@@ -43,6 +48,7 @@ addopts = "-v"
 
 [project.scripts]
 repo-translate = "repo_translator.cli:main"
+repo-translate-ui = "repo_translator.webui.main:run"
 
 [tool.setuptools.packages.find]
 where = ["."]
