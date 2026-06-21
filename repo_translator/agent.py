@@ -247,7 +247,12 @@ def _translate_once(
         - Use {framework} idioms (describe/it, def test_, #[test], etc.).
         """
 
-    prompt = textwrap.dedent(f"""
+    # NOTE: source_code is appended *after* dedent. If it were interpolated
+    # inside the dedented block, its un-indented lines would defeat
+    # textwrap.dedent's common-prefix calculation and leak the template's
+    # indentation into the fenced code block (breaks the offline provider,
+    # which extracts the block verbatim).
+    instructions = textwrap.dedent(f"""
         You are an expert programmer. Translate the following {from_lang} code to {to_lang}.
 
         Rules:
@@ -257,11 +262,9 @@ def _translate_once(
         - Replace language-specific imports/packages with {to_lang} equivalents.
         - If a direct equivalent doesn't exist, write a clear TODO comment.
         {test_note}{fix_note}
-        Source ({from_lang}):
-        ```
-        {source_code}
-        ```
     """).strip()
+
+    prompt = f"{instructions}\n\nSource ({from_lang}):\n```\n{source_code}\n```"
 
     return complete_with_backoff(provider, prompt, max_tokens=8096)
 
