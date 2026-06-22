@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 
 from repo_translator.webui import jobs
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(autouse=True)
 def isolated_data_dir(tmp_path, monkeypatch):

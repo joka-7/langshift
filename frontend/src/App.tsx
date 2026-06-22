@@ -119,7 +119,7 @@ function App() {
           )}
 
           {stage === 'progress' && jobId && (
-            <ProgressView jobId={jobId} onFinished={handleFinished} />
+            <ProgressView key={jobId} jobId={jobId} onFinished={handleFinished} />
           )}
 
           {stage === 'report' && report && jobId && (
