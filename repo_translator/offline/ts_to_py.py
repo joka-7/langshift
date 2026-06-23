@@ -107,6 +107,10 @@ _ARROW_RE = re.compile(
     r'(const|let)\s+(\w+)(?:\s*:\s*[\w<>\[\],\s|&?]+)?\s*=\s*'
     r'(async\s+)?(?:\(([^)]*)\)|(\w+))\s*(?::\s*[\w<>\[\],\s|&?]+)?\s*=>\s*(.*)?$'
 )
+_REQUIRE_RE = re.compile(
+    r"^(?:const|let|var)\s+(?:\{([^}]+)\}|(\w+))\s*=\s*require\(['\"]([^'\"]+)['\"]\)"
+)
+_MODULE_EXPORTS_RE = re.compile(r'^module\.exports\s*=\s*(.+)$')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -210,6 +214,16 @@ def _transform_line(line: str, ctx: _Context) -> tuple[str, set[str]]:
     if s.startswith('import '):
         return _transform_import(line), needed
 
+    # ── CommonJS require() ────────────────────────────────────────────────
+    m = _REQUIRE_RE.match(s)
+    if m:
+        return ind + _transform_require(m), needed
+
+    # ── CommonJS module.exports ───────────────────────────────────────────
+    m = _MODULE_EXPORTS_RE.match(s)
+    if m:
+        return ind + _transform_module_exports(m), needed
+
     # ── Exports ──────────────────────────────────────────────────────────
     if s.startswith('export '):
         line = _transform_export(line)
@@ -301,6 +315,39 @@ def _transform_import(line: str) -> str:
         return f"{ind}# import '{m.group(1)}'  # side-effect import"
 
     return line
+
+
+def _transform_require(m: re.Match) -> str:
+    """const { a, b } = require('./mod')  →  from mod import a, b
+       const mod = require('./mod')       →  import mod as mod
+    """
+    destructured, default_name, raw_module = m.group(1), m.group(2), m.group(3)
+    module = _module_name(raw_module)
+    if destructured is not None:
+        names = []
+        for item in destructured.split(','):
+            item = item.strip()
+            if not item:
+                continue
+            if ':' in item:
+                orig, alias = item.split(':', 1)
+                names.append(f"{orig.strip()} as {alias.strip()}")
+            else:
+                names.append(item)
+        return f"from {module} import {', '.join(names)}"
+    return f"import {module} as {default_name}"
+
+
+def _transform_module_exports(m: re.Match) -> str:
+    """module.exports = { a, b }  →  __all__ = ['a', 'b']
+       module.exports = foo       →  commented out (no Python equivalent for a default export)
+    """
+    rest = m.group(1).rstrip(';').strip()
+    obj_m = re.match(r'^\{([^}]*)\}$', rest)
+    if obj_m:
+        names = [n.strip().split(':')[0].strip() for n in obj_m.group(1).split(',') if n.strip()]
+        return f"__all__ = {names!r}"
+    return f"# module.exports = {rest}  # TODO: convert default export"
 
 
 def _module_name(raw: str) -> str:
@@ -677,6 +724,11 @@ def _transform_expressions(line: str) -> str:
     line = re.sub(r'\bthrow\s+new\s+(\w+)\s*\(', r'raise \1(', line)
     line = re.sub(r'\bthrow\s+new\s+Error\s*\(', 'raise Exception(', line)
     line = re.sub(r'\bnew\s+(\w+)\s*\(', r'\1(', line)
+
+    # Higher-order array methods: obj.filter(fn) → list(filter(fn, obj))  (best effort,
+    # only matches a simple callback reference/expression with no nested parens)
+    line = re.sub(r'\b([\w.]+)\.filter\(([^()]*)\)', r'list(filter(\2, \1))', line)
+    line = re.sub(r'\b([\w.]+)\.map\(([^()]*)\)', r'list(map(\2, \1))', line)
 
     # Array methods (chained)
     line = re.sub(r'\.push\s*\(', '.append(', line)

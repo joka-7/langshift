@@ -71,6 +71,47 @@ class TestExports:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CommonJS require() / module.exports
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCommonJS:
+    def test_require_destructured(self):
+        r = transform("const { isEven, filterEvens } = require('./utils');")
+        assert "from utils import isEven, filterEvens" in r
+
+    def test_require_destructured_with_alias(self):
+        r = transform("const { foo: bar } = require('./mod');")
+        assert "from mod import foo as bar" in r
+
+    def test_require_default(self):
+        r = transform("const utils = require('./utils');")
+        assert "import utils as utils" in r
+
+    def test_module_exports_object(self):
+        r = transform("module.exports = { isEven, filterEvens };")
+        assert "__all__ = ['isEven', 'filterEvens']" in r
+
+    def test_module_exports_default_value_commented(self):
+        r = transform("module.exports = MyClass;")
+        assert r.strip().startswith("#")
+        assert "MyClass" in r
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Higher-order array methods
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHigherOrderArrayMethods:
+    def test_filter(self):
+        r = transform("const evens = numbers.filter(isEven);")
+        assert "list(filter(isEven, numbers))" in r
+
+    def test_map(self):
+        r = transform("const doubled = numbers.map(double);")
+        assert "list(map(double, numbers))" in r
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Variable declarations
 # ─────────────────────────────────────────────────────────────────────────────
 

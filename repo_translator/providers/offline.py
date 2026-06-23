@@ -42,6 +42,13 @@ class OfflineProvider(LLMProvider):
                 '"Offline rule-based translation — manual review recommended."}'
             )
 
+        if 'dependency manifest' in prompt:
+            raise ValueError(
+                "OfflineProvider does not support manifest translation "
+                "(rule-based source-code transformer only) — use a real LLM "
+                "provider for package.json/requirements.txt/etc. conversion."
+            )
+
         code = _extract_code(prompt)
         if code is None:
             raise ValueError(
