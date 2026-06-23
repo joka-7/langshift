@@ -1,3 +1,4 @@
 docs
+frontend
 repo_translator
 tests

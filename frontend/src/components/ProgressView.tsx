@@ -36,7 +36,6 @@ export function ProgressView({ jobId, onFinished }: Props) {
 
   useEffect(() => {
     finishedRef.current = false
-    setEvents([])
     const source = new EventSource(`/api/jobs/${jobId}/stream`)
 
     source.onmessage = (e) => {
