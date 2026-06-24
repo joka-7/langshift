@@ -71,6 +71,65 @@ class TestExports:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CommonJS require() / module.exports
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCommonJS:
+    def test_require_destructured(self):
+        r = transform("const { isEven, filterEvens } = require('./utils');")
+        assert "from utils import isEven, filterEvens" in r
+
+    def test_require_destructured_with_alias(self):
+        r = transform("const { foo: bar } = require('./mod');")
+        assert "from mod import foo as bar" in r
+
+    def test_require_default(self):
+        r = transform("const utils = require('./utils');")
+        assert "import utils as utils" in r
+
+    def test_module_exports_object(self):
+        r = transform("module.exports = { isEven, filterEvens };")
+        assert "__all__ = ['isEven', 'filterEvens']" in r
+
+    def test_module_exports_default_value_commented(self):
+        r = transform("module.exports = MyClass;")
+        assert r.strip().startswith("#")
+        assert "MyClass" in r
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Higher-order array methods
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHigherOrderArrayMethods:
+    def test_filter(self):
+        r = transform("const evens = numbers.filter(isEven);")
+        assert "list(filter(isEven, numbers))" in r
+
+    def test_map(self):
+        r = transform("const doubled = numbers.map(double);")
+        assert "list(map(double, numbers))" in r
+
+    def test_filter_inline_arrow(self):
+        r = transform("const evens = numbers.filter(a => a > 0);")
+        assert "list(filter(lambda a: a > 0, numbers))" in r
+
+    def test_map_inline_arrow_with_nested_call(self):
+        r = transform("const balances = accounts.map(a => a.getBalance());")
+        assert "list(map(lambda a: a.getBalance(), balances" not in r
+        assert "list(map(lambda a: a.getBalance(), accounts))" in r
+
+    def test_reduce_inline_arrow_with_initial_value(self):
+        r = transform("const total = numbers.reduce((sum, b) => sum + b, 0);")
+        assert "functools.reduce(lambda sum, b: sum + b, numbers, 0)" in r
+        assert "import functools" in r
+
+    def test_reduce_without_initial_value(self):
+        r = transform("const total = numbers.reduce((sum, b) => sum + b);")
+        assert "functools.reduce(lambda sum, b: sum + b, numbers)" in r
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Variable declarations
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -157,6 +216,27 @@ class TestClasses:
     def test_this_to_self(self):
         r = transform("    this.name = 'Alice'")
         assert "self.name = 'Alice'" in r
+
+    def test_constructor_parameter_property_shorthand(self):
+        code = "class Foo {\n    constructor(private name: string, age: number) {}\n}"
+        r = transform(code)
+        assert "def __init__(self, name, age):" in r
+        assert "self.name = name" in r
+        assert "private" not in r
+
+    def test_mutable_default_field_hoisted_into_constructor(self):
+        code = "class Foo {\n    private items: string[] = [];\n    constructor() {}\n}"
+        r = transform(code)
+        assert "def __init__(self):" in r
+        assert "self.items = []" in r
+        # should not also remain as a shared class-level attribute
+        assert "items: list" not in r and "items = []  #" not in r
+
+    def test_mutable_default_field_without_constructor_is_flagged(self):
+        code = "class Foo {\n    private items: string[] = [];\n    bar() {\n        return 1;\n    }\n}"
+        r = transform(code)
+        assert "items = []" in r
+        assert "WARNING" in r
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -326,9 +406,42 @@ class TestBuiltins:
         r = transform("throw new Error('oops')")
         assert "raise" in r
 
+    def test_throw_new_error_maps_to_exception(self):
+        r = transform("throw new Error('oops')")
+        assert "raise Exception('oops')" in r
+
+    def test_bare_new_error_maps_to_exception(self):
+        r = transform("const e = new Error('oops')")
+        assert "Exception('oops')" in r
+        assert "Error(" not in r
+
+    def test_throw_new_custom_error_keeps_class_name(self):
+        r = transform("throw new ValidationError('oops')")
+        assert "raise ValidationError('oops')" in r
+
     def test_new_removed(self):
         r = transform("const x = new MyClass()")
         assert "new " not in r
+
+    def test_to_fixed(self):
+        r = transform("const s = amount.toFixed(2);")
+        assert "format(amount, '.2f')" in r
+        assert "toFixed" not in r
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Object literals
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestObjectLiterals:
+    def test_plain_object_literal_to_dict(self):
+        r = transform("const obj = { id: 1, name: 'Alice' };")
+        assert "{'id': 1, 'name': 'Alice'}" in r
+
+    def test_typed_object_literal_to_constructor_call(self):
+        r = transform("const owner: User = { id: 1, name: 'Alice' };")
+        assert "owner = User(id=1, name='Alice')" in r
+        assert "{" not in r
 
 
 # ─────────────────────────────────────────────────────────────────────────────

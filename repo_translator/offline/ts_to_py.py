@@ -46,8 +46,13 @@ def transform(code: str) -> str:
         # ── Single line  ──────────────────────────────────────────────────
         t, extra = _transform_line(line, ctx)
         needed.update(extra)
-        ctx.update(line)
+        leftover = ctx.update(line)
         output.append(t)
+        for fld_ind, fname, val in leftover:
+            # Class closed with unconsumed mutable-default field(s) — no
+            # constructor claimed them, so fall back to a class attribute
+            # (still works, but flag the shared-mutable-default risk).
+            output.append(f"{fld_ind}{fname} = {val}  # WARNING: shared mutable default — consider initializing in __init__")
         i += 1
 
     result = '\n'.join(output)
@@ -61,24 +66,46 @@ def transform(code: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _Context:
-    """Tracks whether we're inside a class body."""
+    """Tracks whether we're inside a class body, plus pending field
+    initializers for the innermost class (mutable-literal class fields,
+    e.g. `private items: T[] = [];`, which need to become per-instance
+    `self.items = []` assignments rather than a shared class attribute)."""
     def __init__(self) -> None:
         self._stack: list[str] = []   # 'class' | 'other'
+        self._class_pending: list[list[tuple[str, str, str]]] = []  # aligned with 'class' frames
 
     @property
     def in_class(self) -> bool:
         return bool(self._stack) and self._stack[-1] == 'class'
 
-    def update(self, line: str) -> None:
+    def add_pending_field(self, ind: str, name: str, val: str) -> None:
+        if self._class_pending:
+            self._class_pending[-1].append((ind, name, val))
+
+    def pop_pending_fields(self) -> list[tuple[str, str, str]]:
+        if self._class_pending:
+            pending = self._class_pending[-1]
+            self._class_pending[-1] = []
+            return pending
+        return []
+
+    def update(self, line: str) -> list[tuple[str, str, str]]:
         stripped = line.strip()
         opens  = line.count('{')
         closes = line.count('}')
         is_class = bool(_CLASS_RE.match(stripped))
-        for _ in range(opens):
-            self._stack.append('class' if (is_class and _ == 0) else 'other')
+        leftover: list[tuple[str, str, str]] = []
+        for idx in range(opens):
+            frame = 'class' if (is_class and idx == 0) else 'other'
+            self._stack.append(frame)
+            if frame == 'class':
+                self._class_pending.append([])
         for _ in range(closes):
             if self._stack:
-                self._stack.pop()
+                popped = self._stack.pop()
+                if popped == 'class' and self._class_pending:
+                    leftover.extend(self._class_pending.pop())
+        return leftover
 
     def process_block(self, lines: list[str]) -> None:
         for l in lines:
@@ -107,6 +134,10 @@ _ARROW_RE = re.compile(
     r'(const|let)\s+(\w+)(?:\s*:\s*[\w<>\[\],\s|&?]+)?\s*=\s*'
     r'(async\s+)?(?:\(([^)]*)\)|(\w+))\s*(?::\s*[\w<>\[\],\s|&?]+)?\s*=>\s*(.*)?$'
 )
+_REQUIRE_RE = re.compile(
+    r"^(?:const|let|var)\s+(?:\{([^}]+)\}|(\w+))\s*=\s*require\(['\"]([^'\"]+)['\"]\)"
+)
+_MODULE_EXPORTS_RE = re.compile(r'^module\.exports\s*=\s*(.+)$')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -210,6 +241,16 @@ def _transform_line(line: str, ctx: _Context) -> tuple[str, set[str]]:
     if s.startswith('import '):
         return _transform_import(line), needed
 
+    # ── CommonJS require() ────────────────────────────────────────────────
+    m = _REQUIRE_RE.match(s)
+    if m:
+        return ind + _transform_require(m), needed
+
+    # ── CommonJS module.exports ───────────────────────────────────────────
+    m = _MODULE_EXPORTS_RE.match(s)
+    if m:
+        return ind + _transform_module_exports(m), needed
+
     # ── Exports ──────────────────────────────────────────────────────────
     if s.startswith('export '):
         line = _transform_export(line)
@@ -224,8 +265,16 @@ def _transform_line(line: str, ctx: _Context) -> tuple[str, set[str]]:
         if am:
             line, needed = _transform_arrow(am, ind)
             return line, needed
-        # Otherwise strip keyword + optional type annotation
-        line = ind + _strip_type_from_decl(rest)
+        # const x: TypeName = { ... }  →  x = TypeName(key=val, ...)  (an object
+        # literal matching a declared PascalCase type is almost always meant to
+        # be that type's instance, not a bare dict)
+        m_obj = re.match(r'(\w+)\s*:\s*([A-Z]\w*)\s*=\s*(\{[^{}]*\})\s*;?\s*$', rest)
+        if m_obj:
+            varname, typename, obj = m_obj.groups()
+            line = f"{ind}{varname} = {typename}({_object_literal_to_kwargs(obj)})"
+        else:
+            # Otherwise strip keyword + optional type annotation
+            line = ind + _strip_type_from_decl(rest)
         s    = line.strip()
 
     # ── class declaration ─────────────────────────────────────────────────
@@ -238,7 +287,7 @@ def _transform_line(line: str, ctx: _Context) -> tuple[str, set[str]]:
 
     # ── class method / constructor (context-aware) ────────────────────────
     if ctx.in_class:
-        r = _transform_method(line)
+        r = _transform_method(line, ctx)
         if r is not None:
             return r, needed
 
@@ -250,6 +299,10 @@ def _transform_line(line: str, ctx: _Context) -> tuple[str, set[str]]:
 
     # ── throw / return type annotations ──────────────────────────────────
     # return x;  (keep, just strip semicolon later)
+
+    # ── Higher-order array methods (inline arrow callbacks) ────────────────
+    line, hof_needed = _transform_higher_order(line)
+    needed.update(hof_needed)
 
     # ── Operators, literals, builtins ─────────────────────────────────────
     line = _transform_expressions(line)
@@ -301,6 +354,39 @@ def _transform_import(line: str) -> str:
         return f"{ind}# import '{m.group(1)}'  # side-effect import"
 
     return line
+
+
+def _transform_require(m: re.Match) -> str:
+    """const { a, b } = require('./mod')  →  from mod import a, b
+       const mod = require('./mod')       →  import mod as mod
+    """
+    destructured, default_name, raw_module = m.group(1), m.group(2), m.group(3)
+    module = _module_name(raw_module)
+    if destructured is not None:
+        names = []
+        for item in destructured.split(','):
+            item = item.strip()
+            if not item:
+                continue
+            if ':' in item:
+                orig, alias = item.split(':', 1)
+                names.append(f"{orig.strip()} as {alias.strip()}")
+            else:
+                names.append(item)
+        return f"from {module} import {', '.join(names)}"
+    return f"import {module} as {default_name}"
+
+
+def _transform_module_exports(m: re.Match) -> str:
+    """module.exports = { a, b }  →  __all__ = ['a', 'b']
+       module.exports = foo       →  commented out (no Python equivalent for a default export)
+    """
+    rest = m.group(1).rstrip(';').strip()
+    obj_m = re.match(r'^\{([^}]*)\}$', rest)
+    if obj_m:
+        names = [n.strip().split(':')[0].strip() for n in obj_m.group(1).split(',') if n.strip()]
+        return f"__all__ = {names!r}"
+    return f"# module.exports = {rest}  # TODO: convert default export"
 
 
 def _module_name(raw: str) -> str:
@@ -437,19 +523,46 @@ _ACCESS_RE = re.compile(
     r'^((?:(?:public|private|protected|static|async|override|abstract|readonly)\s+)+)'
 )
 _CONSTRUCTOR_RE = re.compile(r'^(public\s+|private\s+|protected\s+)?constructor\s*\(([^)]*)\)(?:[^{]*)?')
+_PARAM_MODIFIER_RE = re.compile(r'^(?:(?:public|private|protected|readonly)\s+)+')
 
 
-def _transform_method(line: str) -> str | None:
+def _strip_constructor_params(params: str) -> tuple[str, list[str]]:
+    """Strip TS parameter-property modifiers (private/public/protected/readonly)
+    from constructor params, returning the cleaned param list plus the names
+    TS auto-assigns to `this.x` — those need an explicit self.x = x in __init__."""
+    if not params.strip():
+        return '', []
+    props: list[str] = []
+    cleaned_parts: list[str] = []
+    for part in _split_params(params):
+        part = part.strip()
+        if not part:
+            continue
+        has_modifier = bool(_PARAM_MODIFIER_RE.match(part))
+        part = _PARAM_MODIFIER_RE.sub('', part)
+        if has_modifier:
+            m = re.match(r'(\w+)', part)
+            if m:
+                props.append(m.group(1))
+        cleaned_parts.append(part)
+    return _strip_params(', '.join(cleaned_parts)), props
+
+
+def _transform_method(line: str, ctx: "_Context") -> str | None:
     ind = _indent(line)
     s   = line.strip()
 
     # constructor
     m = _CONSTRUCTOR_RE.match(s)
     if m:
-        params = _strip_params(m.group(2))
-        if params:
-            return f"{ind}def __init__(self, {params}):"
-        return f"{ind}def __init__(self):"
+        cleaned, props = _strip_constructor_params(m.group(2))
+        header = f"{ind}def __init__(self, {cleaned}):" if cleaned else f"{ind}def __init__(self):"
+        pending = ctx.pop_pending_fields()
+        body_lines  = [f"{ind}    self.{p} = {p}" for p in props]
+        body_lines += [f"{ind}    self.{fname} = {val}" for (_, fname, val) in pending]
+        if body_lines:
+            return header + '\n' + '\n'.join(body_lines)
+        return header
 
     # Method with access modifier(s)
     m = _ACCESS_RE.match(s)
@@ -482,6 +595,11 @@ def _transform_method(line: str) -> str | None:
             fname = m3.group(1)
             ftype = _ts_type(m3.group(2).strip()) if m3.group(2) else None
             val   = m3.group(3).rstrip(';').strip() if m3.group(3) else None
+            if val and (val.startswith('[') or val.startswith('{')):
+                # Mutable literal default — must become a per-instance
+                # self.x = val in __init__, not a shared class attribute.
+                ctx.add_pending_field(ind, fname, val)
+                return ''
             if ftype and val:
                 return f"{ind}{fname}: {ftype} = {val}"
             elif ftype:
@@ -614,6 +732,119 @@ def _cond(cond: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Higher-order array methods (inline arrow callbacks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HOF_RE = re.compile(r'\b([\w.]+)\.(filter|map|reduce)\(')
+
+
+def _split_top_level_commas(s: str) -> list[str]:
+    """Split on top-level commas using only paren/bracket/brace depth — unlike
+    _split_params, does NOT treat '<'/'>' as brackets, since those collide
+    with the '=>' in arrow-function callbacks."""
+    depth, cur, out = 0, [], []
+    for ch in s:
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            out.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        out.append(''.join(cur))
+    return out
+
+
+def _arrow_to_lambda(arg: str) -> str:
+    """'a => a.f()' / '(a, b) => a + b' → 'lambda a: a.f()' / 'lambda a, b: a + b'.
+    A plain callback reference (no '=>') is passed through unchanged."""
+    arg = arg.strip()
+    m = re.match(r'\(?\s*([\w\s,]*)\s*\)?\s*=>\s*(.+)$', arg, re.DOTALL)
+    if m:
+        params = m.group(1).strip()
+        body   = m.group(2).strip()
+        return f"lambda {params}: {body}"
+    return arg
+
+
+def _transform_higher_order(line: str) -> tuple[str, set[str]]:
+    """obj.filter(cb) / obj.map(cb) / obj.reduce(cb, init) → list(filter(...)) etc.,
+    handling both plain callback references and inline arrow expressions
+    (which may contain their own parens, so this can't be a simple regex sub)."""
+    needed: set[str] = set()
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _HOF_RE.search(line, i)
+        if not m:
+            out.append(line[i:])
+            break
+        out.append(line[i:m.start()])
+        receiver, method = m.group(1), m.group(2)
+        depth = 1
+        k = m.end()
+        while k < len(line) and depth > 0:
+            if line[k] == '(':
+                depth += 1
+            elif line[k] == ')':
+                depth -= 1
+            k += 1
+        args_str = line[m.end():k - 1]
+        if method in ('filter', 'map'):
+            cb = _arrow_to_lambda(args_str)
+            out.append(f"list({method}({cb}, {receiver}))")
+        else:  # reduce
+            parts = _split_top_level_commas(args_str)
+            cb = _arrow_to_lambda(parts[0]) if parts else ''
+            needed.add('import functools')
+            if len(parts) > 1:
+                out.append(f"functools.reduce({cb}, {receiver}, {parts[1].strip()})")
+            else:
+                out.append(f"functools.reduce({cb}, {receiver})")
+        i = k
+    return ''.join(out), needed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Object literal → dict literal
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _object_literal_to_kwargs(obj: str) -> str:
+    """{ id: 1, name: 'Alice' } → "id=1, name='Alice'" (for use as constructor
+    call kwargs, e.g. `User(id=1, name='Alice')`)."""
+    inner = obj.strip()
+    if inner.startswith('{') and inner.endswith('}'):
+        inner = inner[1:-1]
+    parts = []
+    for part in _split_top_level_commas(inner):
+        part = part.strip()
+        if not part:
+            continue
+        kv = re.match(r'(\w+)\s*:\s*(.+)$', part)
+        parts.append(f"{kv.group(1)}={kv.group(2)}" if kv else part)
+    return ', '.join(parts)
+
+
+def _transform_object_literals(line: str) -> str:
+    """{ id: 1, name: 'Alice' } → {'id': 1, 'name': 'Alice'}  (best-effort,
+    single-line, non-nested — requires at least one 'key:' pair to avoid
+    matching code blocks)."""
+    def repl(m: re.Match) -> str:
+        parts = []
+        for part in _split_top_level_commas(m.group(1)):
+            part = part.strip()
+            if not part:
+                continue
+            kv = re.match(r'(\w+)\s*:\s*(.+)$', part)
+            parts.append(f"'{kv.group(1)}': {kv.group(2)}" if kv else part)
+        return '{' + ', '.join(parts) + '}'
+    return re.sub(r'\{([^{}]*\w+\s*:\s*[^{}]*)\}', repl, line)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Expression-level transformations (operators, builtins, literals)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -630,6 +861,9 @@ def _transform_expressions(line: str) -> str:
     line = re.sub(r'\bundefined\b', 'None', line)
     line = re.sub(r'\btrue\b', 'True', line)
     line = re.sub(r'\bfalse\b', 'False', line)
+
+    # Object literal → dict literal (best-effort, single-line, non-nested)
+    line = _transform_object_literals(line)
 
     # this. → self.
     line = re.sub(r'\bthis\.', 'self.', line)
@@ -656,6 +890,9 @@ def _transform_expressions(line: str) -> str:
     line = re.sub(r'\bJSON\.parse\b', 'json.loads', line)
     line = re.sub(r'\bJSON\.stringify\b', 'json.dumps', line)
 
+    # Number.prototype.toFixed(n) → format(x, '.nf')
+    line = re.sub(r'(\w+(?:\.\w+)*)\.toFixed\(\s*(\d+)\s*\)', r"format(\1, '.\2f')", line)
+
     # Type conversions
     line = re.sub(r'\bparseInt\s*\(', 'int(', line)
     line = re.sub(r'\bparseFloat\s*\(', 'float(', line)
@@ -673,9 +910,13 @@ def _transform_expressions(line: str) -> str:
     # instanceof → isinstance (TODO: syntax differs — isinstance(x, Y))
     line = re.sub(r'(\w+)\s+instanceof\s+(\w+)', r'isinstance(\1, \2)', line)
 
-    # throw new X(...) → raise X(...)
-    line = re.sub(r'\bthrow\s+new\s+(\w+)\s*\(', r'raise \1(', line)
+    # throw new Error(...) → raise Exception(...)  (must run before the
+    # generic "throw new X(" rule below, else Error already became "raise Error(")
     line = re.sub(r'\bthrow\s+new\s+Error\s*\(', 'raise Exception(', line)
+    # throw new X(...) → raise X(...)  (other custom error classes)
+    line = re.sub(r'\bthrow\s+new\s+(\w+)\s*\(', r'raise \1(', line)
+    # new Error(...) → Exception(...)  (no throw, e.g. assigned to a variable)
+    line = re.sub(r'\bnew\s+Error\s*\(', 'Exception(', line)
     line = re.sub(r'\bnew\s+(\w+)\s*\(', r'\1(', line)
 
     # Array methods (chained)
