@@ -17,8 +17,8 @@ export function ReportView({ report }: { report: TranslationReport }) {
         <Stat label="Needed retry" value={s.needed_retry} />
         <Stat label="High confidence" value={s.high_confidence} />
         <Stat label="Needs review" value={s.needs_review} />
-        {s.tests_passed != null && (
-          <Stat label="Tests" value={s.tests_passed ? 'passed' : 'failed'} />
+        {report.tests_passed != null && (
+          <Stat label="Tests" value={report.tests_passed ? 'passed' : 'failed'} />
         )}
       </div>
       {report.files.some((f) => f.status !== 'ok') && (

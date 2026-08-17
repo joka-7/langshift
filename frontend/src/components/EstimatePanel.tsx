@@ -17,7 +17,12 @@ export function EstimatePanel({ estimate, onConfirm, onCancel, busy }: Props) {
         <li>~{estimate.input_tokens.toLocaleString()} input / {estimate.output_tokens.toLocaleString()} output tokens</li>
         <li>Pricing: {estimate.price_label}</li>
         <li className="cost">
-          Estimated cost: <strong>${estimate.estimated_cost.toFixed(4)}</strong>
+          Estimated cost:{' '}
+          <strong>
+            {estimate.estimated_cost != null
+              ? `$${estimate.estimated_cost.toFixed(4)}`
+              : 'pricing not on record'}
+          </strong>
         </li>
       </ul>
       <div className="row actions">
