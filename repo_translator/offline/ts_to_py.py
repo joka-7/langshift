@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -108,8 +107,8 @@ class _Context:
         return leftover
 
     def process_block(self, lines: list[str]) -> None:
-        for l in lines:
-            self.update(l)
+        for line in lines:
+            self.update(line)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -548,7 +547,7 @@ def _strip_constructor_params(params: str) -> tuple[str, list[str]]:
     return _strip_params(', '.join(cleaned_parts)), props
 
 
-def _transform_method(line: str, ctx: "_Context") -> str | None:
+def _transform_method(line: str, ctx: _Context) -> str | None:
     ind = _indent(line)
     s   = line.strip()
 
@@ -742,7 +741,9 @@ def _split_top_level_commas(s: str) -> list[str]:
     """Split on top-level commas using only paren/bracket/brace depth — unlike
     _split_params, does NOT treat '<'/'>' as brackets, since those collide
     with the '=>' in arrow-function callbacks."""
-    depth, cur, out = 0, [], []
+    depth = 0
+    cur: list[str] = []
+    out: list[str] = []
     for ch in s:
         if ch in '([{':
             depth += 1
@@ -1032,7 +1033,9 @@ def _strip_params(params: str) -> str:
 
 
 def _split_params(params: str) -> list[str]:
-    depth, cur, out = 0, [], []
+    depth = 0
+    cur: list[str] = []
+    out: list[str] = []
     for ch in params:
         if ch in '<([{':
             depth += 1

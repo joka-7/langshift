@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import re
 
-from repo_translator.providers.base import LLMProvider
 from repo_translator.offline.transformer import OfflineTransformer
+from repo_translator.providers.base import LLMProvider
 
 
 class OfflineProvider(LLMProvider):

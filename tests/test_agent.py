@@ -9,43 +9,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from helpers import CapturingProvider, MockProvider
 
-from repo_translator.providers.base import LLMProvider
 from repo_translator.agent import (
     LANGUAGE_META,
-    SKIP_DIRS,
-    _ALIAS_MAP,
+    _is_test_file,
     _output_path,
+    _score_confidence,
     _translate_once,
     _try_run,
-    _score_confidence,
     collect_files,
     estimate_translation,
     price_label,
     resolve_language,
+    run_tests,
     translate_repo,
 )
-
-
-# ─────────────────────────────────────────────
-# Mock provider
-# ─────────────────────────────────────────────
-
-class MockProvider(LLMProvider):
-    """Returns responses from a queue; raises Exceptions if queued."""
-    def __init__(self, *responses):
-        self._queue = list(responses) if responses else [""]
-        self._idx   = 0
-
-    def complete(self, prompt: str, max_tokens: int = 8096) -> str:
-        resp = self._queue[min(self._idx, len(self._queue) - 1)]
-        self._idx += 1
-        if isinstance(resp, Exception):
-            raise resp
-        return resp
 
 
 def _provider(code: str = "x = 1") -> MockProvider:
@@ -229,6 +211,102 @@ class TestTryRun:
             assert ok is True
             assert "not found" in msg
 
+    def test_timeout_treated_as_soft_pass(self):
+        import subprocess
+        with patch("repo_translator.agent.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd=["python3"], timeout=15)):
+            ok, msg = _try_run("python", "while True: pass")
+        assert ok is True
+        assert "timed out" in msg
+
+
+# ─────────────────────────────────────────────
+# _is_test_file
+# ─────────────────────────────────────────────
+
+class TestIsTestFile:
+    def test_dot_suffix_pattern_matches(self):
+        # typescript's patterns are dot-prefixed: ".test.ts", ".spec.ts", ...
+        assert _is_test_file(Path("math.test.ts"), "typescript") is True
+        assert _is_test_file(Path("util.spec.ts"), "typescript") is True
+
+    def test_dot_suffix_pattern_does_not_match_source_file(self):
+        assert _is_test_file(Path("math.ts"), "typescript") is False
+
+    def test_suffix_pattern_with_embedded_dot_matches(self):
+        # python's "_test.py" pattern has a dot but doesn't start with one —
+        # matched via the endswith branch, not the startswith branch.
+        assert _is_test_file(Path("math_test.py"), "python") is True
+
+    def test_prefix_pattern_matches(self):
+        # python's "test_" pattern has no dot at all — matched via startswith.
+        assert _is_test_file(Path("test_math.py"), "python") is True
+
+    def test_prefix_pattern_does_not_match_mid_name(self):
+        assert _is_test_file(Path("mytest_math.py"), "python") is False
+
+    def test_language_with_no_test_patterns_never_matches(self):
+        # rust's test_patterns is [] (cargo test covers the whole crate).
+        assert _is_test_file(Path("anything.rs"), "rust") is False
+
+
+# ─────────────────────────────────────────────
+# run_tests
+# ─────────────────────────────────────────────
+
+class TestRunTests:
+    def test_no_test_runner_configured_is_a_soft_pass(self, tmp_path):
+        # java's test_runner is None.
+        passed, output = run_tests(tmp_path, "java", verbose=False)
+        assert passed is True
+        assert "not configured" in output
+
+    def test_passing_suite_reports_passed(self, tmp_path):
+        mock_result = MagicMock(returncode=0, stdout="3 passed", stderr="")
+        with patch("repo_translator.agent.subprocess.run", return_value=mock_result):
+            passed, output = run_tests(tmp_path, "python", verbose=False)
+        assert passed is True
+        assert "3 passed" in output
+
+    def test_failing_suite_reports_failed(self, tmp_path):
+        mock_result = MagicMock(returncode=1, stdout="", stderr="2 failed, 1 passed")
+        with patch("repo_translator.agent.subprocess.run", return_value=mock_result):
+            passed, output = run_tests(tmp_path, "python", verbose=False)
+        assert passed is False
+        assert "2 failed" in output
+
+    def test_verbose_prints_runner_command_and_pass_status(self, tmp_path, capsys):
+        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("repo_translator.agent.subprocess.run", return_value=mock_result):
+            run_tests(tmp_path, "python", verbose=True)
+        out = capsys.readouterr().out
+        assert "pytest" in out
+        assert "Tests passed" in out
+
+    def test_verbose_prints_failure_tail_on_failure(self, tmp_path, capsys):
+        # Regression-guard: the last-20-lines tail print (agent.py) was
+        # entirely unexercised since every existing test used verbose=False.
+        mock_result = MagicMock(returncode=1, stdout="", stderr="AssertionError: boom")
+        with patch("repo_translator.agent.subprocess.run", return_value=mock_result):
+            run_tests(tmp_path, "python", verbose=True)
+        out = capsys.readouterr().out
+        assert "Tests failed" in out
+        assert "AssertionError: boom" in out
+
+    def test_timeout_reports_failed(self, tmp_path):
+        import subprocess
+        with patch("repo_translator.agent.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd=["pytest"], timeout=120)):
+            passed, output = run_tests(tmp_path, "python", verbose=False)
+        assert passed is False
+        assert "timed out" in output
+
+    def test_missing_runner_binary_is_a_soft_pass(self, tmp_path):
+        with patch("repo_translator.agent.subprocess.run", side_effect=FileNotFoundError()):
+            passed, output = run_tests(tmp_path, "python", verbose=False)
+        assert passed is True
+        assert "not found" in output
+
 
 # ─────────────────────────────────────────────
 # translate_repo
@@ -240,9 +318,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.translated == 1
         assert report.failed == 0
@@ -254,9 +331,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider("# empty")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.skipped == 1
         assert report.translated == 0
@@ -265,9 +341,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider()
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.translated == 0
         assert report.total == 0
@@ -279,9 +354,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider("def add(a, b): return a + b")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                           verbose=False, score_confidence=False)
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                       translate_manifests=False, verbose=False, score_confidence=False)
 
         assert (out / "src" / "utils" / "helpers.py").exists()
 
@@ -290,9 +364,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider("print('hi')")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.from_lang == "typescript"
         assert report.to_lang == "python"
@@ -302,9 +375,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider(Exception("API quota exceeded"))
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.failed == 1
         assert report.translated == 0
@@ -316,9 +388,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.translated == 3
         assert report.total == 3
@@ -328,9 +399,8 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.elapsed_seconds >= 0
 
@@ -339,12 +409,125 @@ class TestTranslateRepo:
         out      = tmp_path / "out"
         provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "py", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "py", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.from_lang == "typescript"
         assert report.to_lang == "python"
+
+    def test_exhaustion_message_uses_providers_own_attempt_count(self, tmp_path, capsys):
+        # Regression: the exhaustion branch used to print the module-level
+        # MAX_FIX_ATTEMPTS constant (3) instead of the provider's own
+        # max_fix_attempts, so a provider capped at 1 attempt (e.g. offline)
+        # would misreport "after 3 attempts" having only tried once. Every
+        # other test in this suite passes verbose=False, which is how this
+        # survived undetected.
+        (tmp_path / "x.ts").write_text("const x = 1;")
+        out      = tmp_path / "out"
+        provider = MockProvider("this is not valid python !!!")
+        provider.max_fix_attempts = 1
+
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=True, score_confidence=False)
+
+        out_text = capsys.readouterr().out
+        assert "after 1 attempts" in out_text
+        assert "after 3 attempts" not in out_text
+
+    def test_rust_run_tests_not_gated_on_test_files(self, tmp_path):
+        # Regression: rust has test_patterns=[] (cargo test runs the whole
+        # crate, not individual "*_test.rs" files), so gating run_tests_after
+        # on `test_files` being non-empty made --run-tests silently a no-op
+        # for every rust translation.
+        (tmp_path / "main.py").write_text("print('hi')")
+        out      = tmp_path / "out"
+        provider = MockProvider("fn main() {}")
+
+        with patch("repo_translator.agent.run_tests", return_value=(True, "ok")) as mock_run:
+            translate_repo(tmp_path, out, "python", "rust", provider=provider,
+                            translate_manifests=False, verbose=False,
+                            score_confidence=False, run_tests_after=True)
+
+        mock_run.assert_called_once()
+
+
+class TestTranslateRepoVerboseOutput:
+    """
+    All of these paths print(...) only under verbose=True — every other test
+    in this suite passes verbose=False, which is exactly why they'd previously
+    gone uncovered.
+    """
+
+    def test_empty_repo_prints_no_files_found(self, tmp_path, capsys):
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider(),
+                        translate_manifests=False, verbose=True, score_confidence=False)
+        assert "No typescript files found" in capsys.readouterr().out
+
+    def test_empty_file_prints_skipped(self, tmp_path, capsys):
+        (tmp_path / "empty.ts").write_text("   \n  ")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider(),
+                        translate_manifests=False, verbose=True, score_confidence=False)
+        assert "(empty, skipped)" in capsys.readouterr().out
+
+    def test_api_error_prints_error_message(self, tmp_path, capsys):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+        out = tmp_path / "out"
+        provider = MockProvider(Exception("quota exceeded"))
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=True, score_confidence=False)
+        assert "API error: quota exceeded" in capsys.readouterr().out
+
+    def test_retry_then_succeed_prints_fixed_message(self, tmp_path, capsys):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+        out = tmp_path / "out"
+        provider = MockProvider("this is not valid python", "x = 1")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=True, score_confidence=False)
+        out_text = capsys.readouterr().out
+        assert "retrying" in out_text
+        assert "fixed in 2 attempt" in out_text
+
+    def test_found_source_and_test_file_counts_printed(self, tmp_path, capsys):
+        (tmp_path / "math.ts").write_text("export function add(a, b) { return a + b; }")
+        (tmp_path / "math.test.ts").write_text("test('adds', () => {});")
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=True, score_confidence=False)
+        assert "Found 1 source + 1 test file(s)" in capsys.readouterr().out
+
+
+class TestTranslateRepoTestFileSplit:
+    def test_test_file_prompt_gets_framework_note_source_file_does_not(self, tmp_path):
+        (tmp_path / "math.ts").write_text("export function add(a, b) { return a + b; }")
+        (tmp_path / "math.test.ts").write_text(
+            "import { add } from './math';\n"
+            "test('adds', () => { expect(add(2, 3)).toBe(5); });\n"
+        )
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert report.total == 2
+        test_prompt = next(p for p in provider.calls if "test('adds'" in p)
+        src_prompt  = next(p for p in provider.calls if "test('adds'" not in p)
+        assert "TEST file" in test_prompt
+        assert "pytest" in test_prompt
+        assert "TEST file" not in src_prompt
+
+    def test_non_test_file_prompt_has_no_framework_note(self, tmp_path):
+        (tmp_path / "math.ts").write_text("export function add(a, b) { return a + b; }")
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert "TEST file" not in provider.last_prompt
 
 
 class TestPriceLabel:
@@ -370,6 +553,10 @@ class TestPriceLabel:
     def test_unknown_pricing(self):
         assert price_label("openai", "some-future-model") == "pricing unknown"
 
+    def test_openai_compat_without_base_url_shows_placeholder(self):
+        label = price_label("openai-compat", "any-model")
+        assert "no base URL set" in label
+
 
 class TestTranslateRepoProgress:
     """on_progress is the hook the web UI streams off of."""
@@ -380,9 +567,8 @@ class TestTranslateRepoProgress:
         provider = MockProvider("x = 1")
         events: list[dict] = []
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                           verbose=False, score_confidence=False, on_progress=events.append)
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                       translate_manifests=False, verbose=False, score_confidence=False, on_progress=events.append)
 
         types = [e["type"] for e in events]
         assert "file_start" in types
@@ -398,9 +584,8 @@ class TestTranslateRepoProgress:
         provider = MockProvider()
         events: list[dict] = []
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                           verbose=False, score_confidence=False, on_progress=events.append)
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                       translate_manifests=False, verbose=False, score_confidence=False, on_progress=events.append)
 
         assert events[-1]["type"] == "finished"
         assert events[-1]["summary"]["total"] == 0
@@ -410,9 +595,8 @@ class TestTranslateRepoProgress:
         out      = tmp_path / "out"
         provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=False)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
 
         assert report.translated == 1
 
@@ -482,6 +666,35 @@ class TestEstimateTranslation:
                                    provider="openai", model="gpt-99-ultra")
         assert est["estimated_cost"] is None
 
+    def test_openai_compat_cost_is_none(self, tmp_path):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=False, provider="openai-compat")
+        assert est["estimated_cost"] is None
+
+    def test_unreadable_source_file_is_skipped_not_raised(self, tmp_path, monkeypatch):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+
+        def _raise(self, *a, **kw):
+            raise OSError("permission denied")
+        monkeypatch.setattr(Path, "read_text", _raise)
+
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=False, score_confidence=False)
+        assert est["file_count"] == 1  # collect_files globs by name, doesn't read content
+
+    def test_unreadable_manifest_is_skipped_not_raised(self, tmp_path, monkeypatch):
+        (tmp_path / "package.json").write_text('{"dependencies": {}}')
+        (tmp_path / "main.ts").write_text("const x = 1;")
+
+        def _raise(self, *a, **kw):
+            raise OSError("permission denied")
+        monkeypatch.setattr(Path, "read_text", _raise)
+
+        est = estimate_translation(tmp_path, "ts", "python",
+                                   translate_manifests=True, score_confidence=False)
+        assert est["manifest_count"] == 0  # counted only on successful read
+
 
 # ─────────────────────────────────────────────
 # _score_confidence
@@ -505,6 +718,41 @@ class TestScoreConfidence:
         )
         assert score == 100
 
+    def test_negative_score_clamped_to_0(self):
+        resp     = json.dumps({"score": -20, "reason": "Too low"})
+        provider = MockProvider(resp)
+        score, _ = _score_confidence(
+            provider, "src", "trans", "typescript", "python", 1, True
+        )
+        assert score == 0
+
+    def test_strips_json_markdown_fence(self):
+        resp     = "```json\n" + json.dumps({"score": 70, "reason": "fenced"}) + "\n```"
+        provider = MockProvider(resp)
+        score, reason = _score_confidence(
+            provider, "src", "trans", "typescript", "python", 1, True
+        )
+        assert score == 70
+        assert reason == "fenced"
+
+    def test_strips_bare_markdown_fence(self):
+        # Fence without the "json" language tag.
+        resp     = "```\n" + json.dumps({"score": 60, "reason": "bare fence"}) + "\n```"
+        provider = MockProvider(resp)
+        score, reason = _score_confidence(
+            provider, "src", "trans", "typescript", "python", 1, True
+        )
+        assert score == 60
+
+    def test_reason_truncated_to_200_chars(self):
+        long_reason = "x" * 300
+        resp     = json.dumps({"score": 80, "reason": long_reason})
+        provider = MockProvider(resp)
+        _, reason = _score_confidence(
+            provider, "src", "trans", "typescript", "python", 1, True
+        )
+        assert len(reason) == 200
+
     def test_fallback_on_invalid_json(self):
         provider = MockProvider("not valid json at all")
         score, reason = _score_confidence(
@@ -527,9 +775,8 @@ class TestScoreConfidence:
         # First call returns translation, second returns confidence JSON
         provider  = MockProvider("x = 1", conf_json)
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=True)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=True)
 
         assert report.files[0].confidence == 75
         assert report.files[0].confidence_reason == "Good translation"
@@ -540,9 +787,8 @@ class TestScoreConfidence:
         conf_json = json.dumps({"score": 85, "reason": "Good"})
         provider  = MockProvider("x = 1", conf_json)
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=True)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=True)
 
         assert report.high_confidence == 1
         assert report.needs_review == 0
@@ -553,9 +799,8 @@ class TestScoreConfidence:
         conf_json = json.dumps({"score": 45, "reason": "Broken imports"})
         provider  = MockProvider("x = 1", conf_json)
 
-        with patch("repo_translator.agent.translate_manifest", return_value={"translated": []}):
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    verbose=False, score_confidence=True)
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=True)
 
         assert report.needs_review == 1
         assert report.high_confidence == 0
@@ -564,17 +809,6 @@ class TestScoreConfidence:
 # ─────────────────────────────────────────────
 # Prompt construction — regression: source code must not be re-indented
 # ─────────────────────────────────────────────
-
-class CapturingProvider(LLMProvider):
-    """Records the last prompt it was given and echoes a fixed response."""
-    def __init__(self, response: str = "x = 1"):
-        self.last_prompt: str | None = None
-        self._response = response
-
-    def complete(self, prompt: str, max_tokens: int = 8096) -> str:
-        self.last_prompt = prompt
-        return self._response
-
 
 class TestTranslateOncePrompt:
     """
@@ -609,3 +843,37 @@ class TestTranslateOncePrompt:
 
         block = self._code_block(provider.last_prompt)
         assert block.rstrip("\n") == source.rstrip("\n")
+
+    def test_error_context_included_as_fix_note(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "const x = 1;", "typescript", "python",
+            error_context="IndentationError: unexpected indent",
+        )
+        assert "IndentationError: unexpected indent" in provider.last_prompt
+        assert "previous translation produced this runtime error" in provider.last_prompt
+
+    def test_no_error_context_omits_fix_note(self):
+        provider = CapturingProvider()
+        _translate_once(provider, "const x = 1;", "typescript", "python")
+        assert "previous translation produced this runtime error" not in provider.last_prompt
+
+    def test_is_test_injects_target_framework(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "test('adds', () => {});", "typescript", "python", is_test=True,
+        )
+        assert "TEST file" in provider.last_prompt
+        assert "pytest" in provider.last_prompt  # TEST_FRAMEWORK_MAP[("typescript","python")]
+
+    def test_is_test_false_omits_test_note(self):
+        provider = CapturingProvider()
+        _translate_once(provider, "const x = 1;", "typescript", "python", is_test=False)
+        assert "TEST file" not in provider.last_prompt
+
+    def test_unmapped_language_pair_uses_generic_framework_note(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "x = 1", "python", "swift", is_test=True,
+        )
+        assert "the standard test framework" in provider.last_prompt

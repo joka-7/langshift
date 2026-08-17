@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import os
+
 from repo_translator.providers.base import LLMProvider
 
 
@@ -7,8 +9,8 @@ class GroqProvider(LLMProvider):
     def __init__(self, model_id: str, api_key: str | None = None):
         try:
             import groq as _groq
-        except ImportError:
-            raise ImportError("groq package not installed. Run: pip install groq")
+        except ImportError as e:
+            raise ImportError("groq package not installed. Run: pip install groq") from e
         self._client = _groq.Groq(api_key=api_key or os.environ.get("GROQ_API_KEY"))
         self._model  = model_id
 

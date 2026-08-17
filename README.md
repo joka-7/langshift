@@ -55,7 +55,7 @@ That's the whole loop. Once you're ready to use a real LLM for higher-quality ou
 |---|---|---|---|
 | Claude (Anthropic) | `claude` (default) | `ANTHROPIC_API_KEY` | `haiku`, `sonnet`, `opus` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4-turbo`, `gpt-4o`, `gpt-4o-mini` |
-| Gemini | `gemini` | `GOOGLE_API_KEY` | `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-2.0-flash` |
+| Gemini | `gemini` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-2.0-flash` |
 | Groq | `groq` | `GROQ_API_KEY` | any Groq-hosted model id, free tier |
 | Ollama | `ollama` | none (local) | any locally pulled model |
 | OpenAI-compatible | `openai-compat` | varies | any model, requires `--base-url` |

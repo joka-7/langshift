@@ -17,7 +17,10 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",
+    "pytest-cov>=5.0",
     "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.10",
 ]
 webui = [
     "fastapi>=0.110",
@@ -49,12 +52,46 @@ markers = [
     "integration: exercises real subprocesses / file I/O / HTTP instead of mocks",
 ]
 
+[tool.coverage.run]
+source = ["repo_translator"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# A dense table of regex-based rewrite rules; wrapping them hurts readability
+# more than the line length helps.
+"repo_translator/offline/ts_to_py.py" = ["E501"]
+# Tests frequently embed literal source-code fixtures and long assertion
+# messages inline; wrapping them hurts readability more than it helps.
+"tests/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+# The optional provider SDKs (openai, google-generativeai, ollama, groq) are
+# imported lazily inside functions so the package works without them
+# installed; ignore_missing_imports keeps mypy usable without all extras.
+
 [project.scripts]
 repo-translate = "repo_translator.cli:main"
 repo-translate-ui = "repo_translator.webui.main:run"
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["repo_translator*"]
 
 [project.urls]
 Homepage = "https://github.com/your-username/repo-translator"

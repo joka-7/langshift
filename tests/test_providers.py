@@ -6,15 +6,15 @@ All provider SDK calls are mocked — no real network traffic.
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
 
-from repo_translator.providers import make_provider, SUPPORTED_PROVIDERS
+import pytest
+
+from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider
 from repo_translator.providers.base import LLMProvider
-from repo_translator.providers.claude import ClaudeProvider, CLAUDE_MODELS
+from repo_translator.providers.claude import CLAUDE_MODELS, ClaudeProvider
 from repo_translator.providers.groq import GroqProvider
 from repo_translator.providers.openai_compat import OpenAICompatProvider
-
 
 # ─────────────────────────────────────────────
 # make_provider factory
@@ -35,6 +35,10 @@ class TestMakeProvider:
             make_provider("notreal", "x")
         for name in SUPPORTED_PROVIDERS:
             assert name in str(exc_info.value)
+
+    def test_offline_via_make_provider_redirects_to_make_offline_provider(self):
+        with pytest.raises(ValueError, match="make_offline_provider"):
+            make_provider("offline", "n/a")
 
     def test_openai_missing_sdk_raises_import_error(self):
         with patch.dict("sys.modules", {"openai": None}):
@@ -59,12 +63,9 @@ class TestMakeProvider:
 class TestClaudeProvider:
     def test_friendly_name_resolved_to_model_id(self):
         for name, model_id in CLAUDE_MODELS.items():
-            with patch("repo_translator.providers.claude.anthropic.Anthropic") as MockAnt:
-                make_provider("claude", name)
-            # ClaudeProvider stores the resolved ID
-            instance = MockAnt.return_value
-            # Just assert make_provider doesn't raise
-            assert name in CLAUDE_MODELS
+            with patch("repo_translator.providers.claude.anthropic.Anthropic"):
+                p = make_provider("claude", name)
+            assert p._model == model_id
 
     def test_raw_model_id_passed_through(self):
         raw_id = "claude-some-future-model-99"
@@ -122,6 +123,126 @@ class TestGroqProvider:
 
     def test_groq_in_supported_providers(self):
         assert "groq" in SUPPORTED_PROVIDERS
+
+
+# ─────────────────────────────────────────────
+# GeminiProvider
+# ─────────────────────────────────────────────
+
+def _mock_genai_modules() -> tuple[MagicMock, MagicMock]:
+    """
+    `import google.generativeai as genai` needs both sys.modules entries
+    patched: the top-level `google` package (nonexistent in this test env,
+    since google-generativeai isn't a dev dependency) and the `generativeai`
+    submodule, with the latter set as an attribute of the former — Python
+    binds the `as genai` name via sys.modules, but resolving the dotted
+    import still requires the parent package to exist and expose it.
+    """
+    mock_genai = MagicMock()
+    mock_genai.GenerativeModel.return_value = MagicMock()
+    mock_google = MagicMock()
+    mock_google.generativeai = mock_genai
+    return mock_google, mock_genai
+
+
+class TestGeminiProvider:
+    def test_uses_gemini_api_key_env_var(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "from-gemini-key")
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        mock_google, mock_genai = _mock_genai_modules()
+        with patch.dict("sys.modules", {"google": mock_google, "google.generativeai": mock_genai}):
+            from repo_translator.providers.gemini import GeminiProvider
+            GeminiProvider(model_id="gemini-1.5-pro")
+        mock_genai.configure.assert_called_once_with(api_key="from-gemini-key")
+
+    def test_falls_back_to_google_api_key_env_var(self, monkeypatch):
+        # Regression: README documented GOOGLE_API_KEY while the code only
+        # read GEMINI_API_KEY, so following the README's own instructions
+        # produced an unauthenticated client. GOOGLE_API_KEY is now accepted
+        # as a fallback so neither doc reader is left wrong.
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.setenv("GOOGLE_API_KEY", "from-google-key")
+        mock_google, mock_genai = _mock_genai_modules()
+        with patch.dict("sys.modules", {"google": mock_google, "google.generativeai": mock_genai}):
+            from repo_translator.providers.gemini import GeminiProvider
+            GeminiProvider(model_id="gemini-1.5-pro")
+        mock_genai.configure.assert_called_once_with(api_key="from-google-key")
+
+    def test_gemini_api_key_takes_precedence_over_google_api_key(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "from-gemini-key")
+        monkeypatch.setenv("GOOGLE_API_KEY", "from-google-key")
+        mock_google, mock_genai = _mock_genai_modules()
+        with patch.dict("sys.modules", {"google": mock_google, "google.generativeai": mock_genai}):
+            from repo_translator.providers.gemini import GeminiProvider
+            GeminiProvider(model_id="gemini-1.5-pro")
+        mock_genai.configure.assert_called_once_with(api_key="from-gemini-key")
+
+    def test_explicit_api_key_takes_precedence_over_env_vars(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "from-env")
+        mock_google, mock_genai = _mock_genai_modules()
+        with patch.dict("sys.modules", {"google": mock_google, "google.generativeai": mock_genai}):
+            from repo_translator.providers.gemini import GeminiProvider
+            GeminiProvider(model_id="gemini-1.5-pro", api_key="explicit-key")
+        mock_genai.configure.assert_called_once_with(api_key="explicit-key")
+
+    def test_complete_calls_generate_content(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "k")
+        mock_google, mock_genai = _mock_genai_modules()
+        mock_model = MagicMock()
+        mock_model.generate_content.return_value = MagicMock(text="translated  ")
+        mock_genai.GenerativeModel.return_value = mock_model
+        with patch.dict("sys.modules", {"google": mock_google, "google.generativeai": mock_genai}):
+            from repo_translator.providers.gemini import GeminiProvider
+            p = GeminiProvider(model_id="gemini-1.5-pro")
+            result = p.complete("translate this")
+        assert result == "translated"
+        mock_model.generate_content.assert_called_once_with("translate this")
+
+
+# ─────────────────────────────────────────────
+# OllamaProvider
+# ─────────────────────────────────────────────
+
+class TestOllamaProvider:
+    def test_complete_calls_generate_and_strips_response(self):
+        mock_ollama_mod = MagicMock()
+        mock_ollama_mod.generate.return_value = {"response": "  translated code  "}
+        with patch.dict("sys.modules", {"ollama": mock_ollama_mod}):
+            p = make_provider("ollama", "llama3")
+            result = p.complete("translate this")
+        assert result == "translated code"
+        mock_ollama_mod.generate.assert_called_once_with(model="llama3", prompt="translate this")
+
+    def test_complete_handles_object_style_response(self):
+        # Some ollama client versions return an object with a .response
+        # attribute instead of a dict.
+        mock_ollama_mod = MagicMock()
+        mock_ollama_mod.generate.return_value = MagicMock(response="object-style result")
+        with patch.dict("sys.modules", {"ollama": mock_ollama_mod}):
+            p = make_provider("ollama", "llama3")
+            result = p.complete("translate this")
+        assert result == "object-style result"
+
+
+# ─────────────────────────────────────────────
+# OpenAIProvider
+# ─────────────────────────────────────────────
+
+class TestOpenAIProvider:
+    def test_complete_calls_chat_completions(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="  translated  "))
+        ]
+        mock_openai_mod = MagicMock()
+        mock_openai_mod.OpenAI.return_value = mock_client
+        with patch.dict("sys.modules", {"openai": mock_openai_mod}):
+            p = make_provider("openai", "gpt-4o")
+            result = p.complete("translate this", max_tokens=512)
+        assert result == "translated"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 512
+        assert call_kwargs["model"] == "gpt-4o"
 
 
 # ─────────────────────────────────────────────

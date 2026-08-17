@@ -1,12 +1,13 @@
 from __future__ import annotations
+
 from repo_translator.providers.base import LLMProvider
-from repo_translator.providers.claude import ClaudeProvider, CLAUDE_MODELS
-from repo_translator.providers.openai import OpenAIProvider
+from repo_translator.providers.claude import CLAUDE_MODELS, ClaudeProvider
 from repo_translator.providers.gemini import GeminiProvider
-from repo_translator.providers.ollama import OllamaProvider
 from repo_translator.providers.groq import GroqProvider
-from repo_translator.providers.openai_compat import OpenAICompatProvider
 from repo_translator.providers.offline import OfflineProvider
+from repo_translator.providers.ollama import OllamaProvider
+from repo_translator.providers.openai import OpenAIProvider
+from repo_translator.providers.openai_compat import OpenAICompatProvider
 
 SUPPORTED_PROVIDERS = ("claude", "openai", "gemini", "ollama", "groq", "openai-compat", "offline")
 

@@ -10,16 +10,17 @@ import sys
 from pathlib import Path
 
 from repo_translator.agent import (
-    LANGUAGE_META,
-    DEFAULT_PROVIDER,
-    DEFAULT_MODEL,
     _ALIAS_MAP,
-    translate_repo,
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    LANGUAGE_META,
     estimate_translation,
     price_label,
+    resolve_language,
+    translate_repo,
 )
-from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider, make_offline_provider
-from repo_translator.agent import resolve_language
+from repo_translator.providers import SUPPORTED_PROVIDERS, make_offline_provider, make_provider
+from repo_translator.providers.base import LLMProvider
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -151,6 +152,7 @@ def main() -> None:
                 sys.exit(0)
 
     try:
+        provider: LLMProvider
         if args.provider == "offline":
             from_resolved = resolve_language(from_key)
             to_resolved   = resolve_language(to_key)

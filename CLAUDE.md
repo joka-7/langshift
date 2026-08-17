@@ -6,16 +6,26 @@ This project was started in a Claude.ai chat session. You are continuing the wor
 
 ## What this project is
 
-A CLI tool that translates an entire code repository from one programming language to another using the Claude API. It translates source files, test files, and dependency manifests, auto-runs the output, and auto-fixes errors with up to 3 retries per file.
+A CLI tool (plus an optional web UI) that translates an entire code repository from one
+programming language to another using an LLM. It translates source files, test files, and
+dependency manifests, auto-runs the output, and auto-fixes errors with up to 3 retries per file
+(fewer for providers that opt into less, e.g. the offline provider retries 0 times since its
+output is deterministic).
 
 **Install and run:**
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,webui]"
 export ANTHROPIC_API_KEY=sk-ant-...
 repo-translate --input ./my-ts-repo --from ts --to python
 repo-translate --input ./my-repo --from ts --to python --run-tests  # also run translated tests
-pytest  # run the project's own unit tests
+repo-translate --input ./my-ts-repo --from ts --to python --provider offline  # no API key needed
+pytest         # full suite (unit + integration)
+pytest -m "not integration"   # fast lane only — mocked providers, no subprocesses/threads
+ruff check .   # lint
+mypy repo_translator  # type check
 ```
+
+Multiple LLM providers are supported beyond Claude — see `repo_translator/providers/`.
 
 ---
 
@@ -23,22 +33,44 @@ pytest  # run the project's own unit tests
 
 ```
 repo_translator/
-├── agent.py      — core logic: file collection, Claude API calls, auto-fix loop, test detection
-├── manifest.py   — translates dependency files (package.json → requirements.txt etc.)
-├── report.py     — TranslationReport dataclass, saves .json + .md summary
-├── cli.py        — argparse CLI entry point
-└── webui/        — FastAPI backend for the web UI (jobs.py: background job manager +
-                     JSON history; main.py: API routes incl. SSE progress streaming)
+├── agent.py       — core logic: file collection, provider calls, auto-fix loop, test detection
+├── manifest.py    — translates dependency files (package.json → requirements.txt etc.)
+├── report.py      — TranslationReport dataclass, saves .json + .md summary
+├── cli.py         — argparse CLI entry point
+├── providers/     — one module per LLM backend (claude, openai, gemini, groq, ollama,
+│                    openai_compat) plus base.py (LLMProvider ABC) and retry.py
+│                    (rate-limit-aware backoff wrapper used by both agent.py and manifest.py)
+├── offline/       — rule-based, LLM-free transformer (currently ts/js → python) used by the
+│                    `offline` provider; ts_to_py.py is the ~75%-coverage rewrite engine
+└── webui/         — FastAPI backend for the web UI (jobs.py: background job manager +
+                      JSON history; main.py: API routes incl. SSE progress streaming)
 
-frontend/         — React + Vite SPA for the web UI (talks to webui/ over /api)
+frontend/          — React + Vite SPA for the web UI (talks to webui/ over /api)
+frontend/e2e/      — Playwright end-to-end suite, drives the built SPA against a real backend
+
+docs/
+├── HLD.md         — high-level architecture / design docs
+└── LLD.md         — low-level design docs (module map, data structures, route list, etc.)
 
 tests/
-├── test_agent.py    — unit tests (all Claude calls are mocked)
-├── test_manifest.py — unit tests
+├── conftest.py      — shared fixtures (ts_repo, ts_repo_with_tests)
+├── helpers.py       — shared provider doubles (MockProvider, CapturingProvider)
+├── test_agent.py    — unit tests, mocked providers
+├── test_manifest.py — unit tests, mocked providers
+├── test_offline.py  — unit tests for the offline ts→py transformer
+├── test_providers.py— unit tests, one class per provider, SDKs mocked via sys.modules
+├── test_retry.py    — unit tests for the backoff/retry wrapper (time.sleep always mocked)
 ├── test_report.py   — unit tests
-└── test_webui.py    — webui backend tests (FastAPI TestClient + offline provider)
+├── test_webui.py    — webui backend tests (FastAPI TestClient + offline provider)
+│                       [pytest.mark.integration]
+└── test_integration.py — real subprocess CLI runs, offline provider [pytest.mark.integration]
 
-.github/workflows/translate.yml — GitHub Actions: run translation via UI, push to branch
+.github/workflows/
+├── ci.yml           — lint (ruff+mypy), unit tests, integration tests, coverage gate,
+│                       frontend lint/build, Playwright e2e
+├── security.yml      — pip-audit, npm audit, bandit, eslint-security, gitleaks, CodeQL
+└── translate.yml     — workflow_dispatch: run a translation via GitHub Actions, push to branch
+
 pyproject.toml — package config, entry points: repo-translate = repo_translator.cli:main,
                   repo-translate-ui = repo_translator.webui.main:run (requires [webui] extra)
 ```
@@ -52,15 +84,29 @@ pyproject.toml — package config, entry points: repo-translate = repo_translato
 2. `translate_manifest()` — find and translate package.json / go.mod / Cargo.toml etc.
 3. `collect_files()` — rglob for source extensions, skip SKIP_DIRS
 4. `_is_test_file()` — detect test files by pattern (*.test.ts, test_*.py, _test.go etc.)
-5. Per file: `_translate_once()` → `_try_run()` → retry loop up to MAX_FIX_ATTEMPTS (3)
-6. Optionally `run_tests()` — run pytest / go test / jest on the output directory
-7. Return `TranslationReport` with per-file results
+5. Per file: `_translate_once()` → `_try_run()` → retry loop up to the provider's
+   `max_fix_attempts` (default 3; the offline provider overrides this to 1, since its output
+   is deterministic and retrying won't change it)
+6. Optionally `run_tests()` — run pytest / go test / jest / cargo test etc. on the output
+   directory. Gated on test files being found, *except* for languages like Rust whose test
+   runner (`cargo test`) covers the whole project regardless of individual filenames
+   (`test_patterns == []`) — for those, `--run-tests` always attempts a run.
+7. Return `TranslationReport` with per-file results, including `tests_passed`/`test_output`
+   when a test run happened
 
 ### Key design decisions
-- **Claude model:** `claude-sonnet-4-20250514` hardcoded in `agent.py` (MODEL constant)
+- **LLM backend:** pluggable via `LLMProvider` (`providers/base.py`). Claude is the default
+  (`providers/claude.py`, models in `CLAUDE_MODELS`); OpenAI, Gemini, Groq, Ollama, and any
+  OpenAI-compatible endpoint are also supported. An `offline` provider (`providers/offline.py`)
+  wraps a pure rule-based transformer (`offline/`) for testing and CI without API calls.
 - **Test files** get a special prompt note specifying the target test framework (e.g. jest → pytest). See `TEST_FRAMEWORK_MAP` in agent.py
 - **Auto-fix loop:** if `_try_run()` fails, the error is passed back to `_translate_once()` as `error_context` for the next attempt
-- **Manifests** are translated separately before source files, saved to the output root
+- **Rate limits:** `providers/retry.py` wraps every provider call (used by both `agent.py` and
+  `manifest.py`) with exponential backoff, capped at `MAX_WAIT` (120s) before failing fast.
+- **Manifests** are translated separately before source files, saved to the output root.
+  `_find_manifests()` returns them in a deterministic order (by pattern, then alphabetically);
+  when multiple source manifests would map to the same output filename, later ones are saved
+  with a disambiguating suffix instead of overwriting the first.
 - **No state between files** — each file is translated independently; there's no cross-file context passed to Claude yet (see TODO below)
 
 ### Supported languages (13 total)
@@ -72,11 +118,17 @@ Each entry in `LANGUAGE_META` has: aliases, extensions, runner (for auto-run), t
 
 ## Current test status
 
-**71/71 tests passing.** Run with:
+Run with:
 ```bash
-pytest
+pytest                     # full suite
+pytest -m "not integration"   # fast lane (mocked providers, no subprocesses/threads)
+pytest --cov=repo_translator --cov-report=term-missing   # with coverage
 ```
-All tests mock the Anthropic client — no real API calls needed to run the test suite.
+CI enforces a coverage floor (`--cov-fail-under`, see `ci.yml`) and runs `ruff check` + `mypy`
+as a separate lint job. Everything except `test_integration.py` and `test_webui.py` mocks the
+LLM provider — no real API calls needed to run the unit suite. Those two integration-marked
+files run real subprocesses / a real FastAPI TestClient against the `offline` provider, so they
+still need no API key or network access.
 
 ---
 
@@ -84,11 +136,15 @@ All tests mock the Anthropic client — no real API calls needed to run the test
 
 1. **No cross-file context** — each file is translated in isolation. Claude doesn't know what other files exist or how they import each other. For large repos with complex interdependencies, this causes broken imports in the output. Fix: build a dependency graph first, pass relevant context per file.
 
-2. **Test runner for compiled languages** — Java, Kotlin, C#, Rust, C++ don't have auto-run support yet. Their `test_runner` is `None`. Fix: add compile + run steps.
+2. **Test runner for compiled languages** — Java, Kotlin, C#, C++ don't have auto-run support
+   yet. Their `test_runner` is `None`. Fix: add compile + run steps. (Rust's runner works;
+   see the `--run-tests` gating note above.)
 
-3. **`--test` flag runs test suite but doesn't retry on failure** — unlike source files which get 3 fix attempts, the test suite just runs once and reports. Fix: implement the same retry loop for tests.
+3. **`--run-tests` runs the test suite but doesn't retry on failure** — unlike source files which get fix attempts, the test suite just runs once and reports. Fix: implement the same retry loop for tests.
 
-4. **No `requirements.txt` → `package.json` validation** — manifest translation is Claude-only with no verification that the output is valid JSON / TOML / etc. Fix: add schema validation per target format.
+4. **No `requirements.txt` → `package.json` validation** — manifest translation is LLM-only
+   with no verification that the output is valid JSON / TOML / etc. Fix: add schema validation
+   per target format.
 
 5. **Large files** — files over ~4000 lines may hit the context window. Fix: add chunking logic, translate function-by-function for large files.
 
@@ -114,20 +170,38 @@ In `agent.py`, add an entry to `LANGUAGE_META`:
 ```
 Optionally add entries to `TEST_FRAMEWORK_MAP` for test translation context.
 
+If the language's test runner (like Rust's `cargo test`) tests the whole project rather than
+individual files, leave `test_patterns` as `[]` — `translate_repo()` treats an empty
+`test_patterns` list for the *target* language as "always attempt `--run-tests`", not "never".
+
 ---
 
 ## Environment
 
 - Python 3.10+
-- `anthropic>=0.50.0` (installed)
-- Dev deps: `pytest>=8.0`, `pytest-mock>=3.12`
-- `pip install -e ".[dev]"` installs everything
+- `anthropic>=0.50.0` (core dependency; other providers are optional extras — see
+  `pyproject.toml`'s `[project.optional-dependencies]`)
+- Dev deps: `pytest>=8.0`, `pytest-mock>=3.12`, `pytest-cov>=5.0`, `httpx>=0.27`, `ruff>=0.6`,
+  `mypy>=1.10`
+- `pip install -e ".[dev,webui]"` installs everything needed to run the full test suite
 
 ---
 
 ## Conventions
 
-- All Claude mocking in tests uses `unittest.mock.MagicMock` — no pytest-mock fixtures yet
-- `verbose=False` in all test calls to suppress output
-- `translate_manifests=False` or mock `translate_manifest` in agent tests to isolate
-- Report is always returned from `translate_repo()`, never raised as exception — errors are captured per-file
+- Provider doubles (`MockProvider`, `CapturingProvider`) live in `tests/helpers.py`; shared
+  fixtures (`ts_repo`, `ts_repo_with_tests`) live in `tests/conftest.py` — reuse them rather
+  than redefining locally.
+- `verbose=False` in test calls unless the test is specifically asserting on printed output
+  (then use `capsys` and `verbose=True`).
+- `translate_manifests=False` to isolate `translate_repo()` tests from manifest translation.
+- Report is always returned from `translate_repo()`, never raised as exception — errors are captured per-file.
+- Tests that raise a real rate-limit-shaped `Exception` (message containing "rate limit", "429",
+  etc.) will hit the real exponential backoff in `providers/retry.py` unless
+  `time.sleep` is mocked — always `patch("repo_translator.providers.retry.time.sleep")` in
+  that case (see `test_retry.py` and the `test_api_error_is_handled_gracefully` test in
+  `test_manifest.py` for the pattern). Forgetting this doesn't fail the test, it just makes it
+  take up to ~60s for real.
+- `tests/*` and `repo_translator/offline/ts_to_py.py` are exempted from ruff's line-length
+  check (`E501`) — both legitimately contain long inline fixtures / dense pattern tables where
+  wrapping would hurt readability more than it helps.

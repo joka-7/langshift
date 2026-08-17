@@ -5,9 +5,11 @@ Each entry maps "from_lang:to_lang" to a transform(code: str) -> str function.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from repo_translator.offline import ts_to_py
 
-_REGISTRY: dict[str, object] = {
+_REGISTRY: dict[str, Callable[[str], str]] = {
     "typescript:python": ts_to_py.transform,
     "javascript:python": ts_to_py.transform,   # JS is a TS subset
 }
@@ -23,7 +25,7 @@ class OfflineTransformer:
                 f"No offline transformer for {from_lang} → {to_lang}.\n"
                 f"  Supported pairs: {pairs}"
             )
-        return fn(code)  # type: ignore[call-arg]
+        return fn(code)
 
     @staticmethod
     def supports(from_lang: str, to_lang: str) -> bool:

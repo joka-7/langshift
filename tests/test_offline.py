@@ -5,10 +5,10 @@ No API calls or network required.
 from __future__ import annotations
 
 import pytest
-from repo_translator.offline.ts_to_py import transform
-from repo_translator.offline.transformer import OfflineTransformer
-from repo_translator.providers.offline import OfflineProvider, _extract_code
 
+from repo_translator.offline.transformer import OfflineTransformer
+from repo_translator.offline.ts_to_py import transform
+from repo_translator.providers.offline import OfflineProvider, _extract_code
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Imports
@@ -527,6 +527,29 @@ class TestOfflineProvider:
         code = _extract_code(prompt)
         assert code is not None
         assert "const y = 1;" in code
+
+    def test_extract_code_falls_back_to_tagged_fence(self):
+        # The primary regex expects the fence to open with a bare ``` \n;
+        # a fence opened with a language tag (```typescript) only matches
+        # the fallback regex.
+        prompt = "Some text\n```typescript\nconst z = 2;\n```\nmore text"
+        code = _extract_code(prompt)
+        assert code is not None
+        assert "const z = 2;" in code
+
+    def test_extract_code_returns_none_when_no_fence(self):
+        assert _extract_code("no fenced code block here at all") is None
+
+    def test_manifest_prompt_raises_value_error(self):
+        p = self._make()
+        prompt = "Convert this typescript dependency manifest to an equivalent python manifest."
+        with pytest.raises(ValueError, match="does not support manifest translation"):
+            p.complete(prompt)
+
+    def test_prompt_with_no_extractable_code_raises_value_error(self):
+        p = self._make()
+        with pytest.raises(ValueError, match="could not extract source code"):
+            p.complete("Translate this but there is no fenced code block")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

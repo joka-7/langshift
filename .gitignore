@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.coverage
 frontend/e2e/.data/
 frontend/e2e/fixtures/*_python/
 frontend/test-results/
