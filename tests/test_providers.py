@@ -9,6 +9,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from anthropic.types import TextBlock
 
 from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider
 from repo_translator.providers.base import LLMProvider
@@ -75,7 +76,9 @@ class TestClaudeProvider:
 
     def test_complete_calls_messages_create(self):
         mock_client = MagicMock()
-        mock_client.messages.create.return_value.content = [MagicMock(text="result")]
+        mock_client.messages.create.return_value.content = [
+            MagicMock(spec=TextBlock, text="result")
+        ]
         with patch("repo_translator.providers.claude.anthropic.Anthropic", return_value=mock_client):
             p = ClaudeProvider(model_id="claude-sonnet-4-6")
             result = p.complete("translate this")
@@ -84,7 +87,9 @@ class TestClaudeProvider:
 
     def test_complete_passes_max_tokens(self):
         mock_client = MagicMock()
-        mock_client.messages.create.return_value.content = [MagicMock(text="ok")]
+        mock_client.messages.create.return_value.content = [
+            MagicMock(spec=TextBlock, text="ok")
+        ]
         with patch("repo_translator.providers.claude.anthropic.Anthropic", return_value=mock_client):
             p = ClaudeProvider(model_id="claude-sonnet-4-6")
             p.complete("prompt", max_tokens=256)

@@ -85,7 +85,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # jsdom 30 (a vitest dev dependency) requires Node >=22.22.2; Node 20
+          # doesn't just warn on this — it hard-crashes at runtime inside
+          # jsdom's undici dependency ("webidl.util.markAsUncloneable is not
+          # a function").
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
@@ -110,7 +114,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # jsdom 30 (a vitest dev dependency) requires Node >=22.22.2; Node 20
+          # doesn't just warn on this — it hard-crashes at runtime inside
+          # jsdom's undici dependency ("webidl.util.markAsUncloneable is not
+          # a function").
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
