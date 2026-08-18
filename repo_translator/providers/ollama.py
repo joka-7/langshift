@@ -15,4 +15,6 @@ class OllamaProvider(LLMProvider):
     def complete(self, prompt: str, max_tokens: int = 8096) -> str:
         raw = self._ollama.generate(model=self._model, prompt=prompt)
         text = raw.response if hasattr(raw, "response") else raw["response"]
+        if text is None:
+            raise ValueError("Ollama response had no text content")
         return text.strip()

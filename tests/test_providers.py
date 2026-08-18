@@ -129,6 +129,23 @@ class TestGroqProvider:
     def test_groq_in_supported_providers(self):
         assert "groq" in SUPPORTED_PROVIDERS
 
+    def test_none_content_raises_clear_error(self):
+        # Regression: message.content is str | None per the SDK's own types
+        # (e.g. a tool-call-only response); calling .strip() on it directly
+        # crashed with an unhelpful AttributeError. Only caught by mypy once
+        # the real groq SDK type stubs are installed (all-providers extra),
+        # which CI's lint job doesn't install — so this needed a runtime test.
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content=None))
+        ]
+        mock_groq_mod = MagicMock()
+        mock_groq_mod.Groq.return_value = mock_client
+        with patch.dict("sys.modules", {"groq": mock_groq_mod}):
+            p = GroqProvider(model_id="llama-3.1-70b-versatile")
+            with pytest.raises(ValueError, match="no text content"):
+                p.complete("translate this")
+
 
 # ─────────────────────────────────────────────
 # GeminiProvider
@@ -228,6 +245,14 @@ class TestOllamaProvider:
             result = p.complete("translate this")
         assert result == "object-style result"
 
+    def test_none_response_raises_clear_error(self):
+        mock_ollama_mod = MagicMock()
+        mock_ollama_mod.generate.return_value = {"response": None}
+        with patch.dict("sys.modules", {"ollama": mock_ollama_mod}):
+            p = make_provider("ollama", "llama3")
+            with pytest.raises(ValueError, match="no text content"):
+                p.complete("translate this")
+
 
 # ─────────────────────────────────────────────
 # OpenAIProvider
@@ -248,6 +273,18 @@ class TestOpenAIProvider:
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
         assert call_kwargs["max_tokens"] == 512
         assert call_kwargs["model"] == "gpt-4o"
+
+    def test_none_content_raises_clear_error(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content=None))
+        ]
+        mock_openai_mod = MagicMock()
+        mock_openai_mod.OpenAI.return_value = mock_client
+        with patch.dict("sys.modules", {"openai": mock_openai_mod}):
+            p = make_provider("openai", "gpt-4o")
+            with pytest.raises(ValueError, match="no text content"):
+                p.complete("translate this")
 
 
 # ─────────────────────────────────────────────
@@ -287,3 +324,18 @@ class TestOpenAICompatProvider:
             with pytest.raises(ImportError, match="pip install openai"):
                 make_provider("openai-compat", "llama3",
                               base_url="https://api.together.xyz/v1")
+
+    def test_none_content_raises_clear_error(self):
+        mock_openai = MagicMock()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content=None))
+        ]
+        mock_openai.OpenAI.return_value = mock_client
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            p = OpenAICompatProvider(
+                model_id="meta-llama/Llama-3-70b",
+                base_url="https://api.together.xyz/v1",
+            )
+            with pytest.raises(ValueError, match="no text content"):
+                p.complete("hello")

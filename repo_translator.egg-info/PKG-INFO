@@ -14,6 +14,7 @@ Requires-Dist: pytest-cov>=5.0; extra == "dev"
 Requires-Dist: httpx>=0.27; extra == "dev"
 Requires-Dist: ruff>=0.6; extra == "dev"
 Requires-Dist: mypy>=1.10; extra == "dev"
+Requires-Dist: setuptools>=83.0.0; extra == "dev"
 Provides-Extra: webui
 Requires-Dist: fastapi>=0.110; extra == "webui"
 Requires-Dist: uvicorn[standard]>=0.29; extra == "webui"
