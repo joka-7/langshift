@@ -25,10 +25,12 @@ from typing import Any
 
 from repo_translator.agent import (
     LANGUAGE_META,
-    estimate_translation as _estimate_translation,
     price_label,
     resolve_language,
     translate_repo,
+)
+from repo_translator.agent import (
+    estimate_translation as _estimate_translation,
 )
 from repo_translator.providers import make_offline_provider, make_provider
 from repo_translator.providers.base import LLMProvider
@@ -56,7 +58,7 @@ class Job:
     status: str = "running"  # running | done | failed
     error: str | None = None
     created_at: float = field(default_factory=time.time)
-    events: "queue.Queue[Any]" = field(default_factory=queue.Queue)
+    events: queue.Queue[Any] = field(default_factory=queue.Queue)
     # Replayable log of every event emitted so far, for clients that connect
     # to the SSE stream after the job has already started.
     history: list[dict] = field(default_factory=list)
@@ -157,7 +159,9 @@ def start_job(
     )
 
     try:
-        provider = _build_provider(provider_name, model, from_resolved, to_resolved, api_key, base_url)
+        provider = _build_provider(
+            provider_name, model, from_resolved, to_resolved, api_key, base_url,
+        )
     except (ImportError, ValueError) as e:
         raise JobError(str(e)) from e
 

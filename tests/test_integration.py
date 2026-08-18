@@ -30,17 +30,6 @@ def run_cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.fixture
-def ts_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "main.ts").write_text(
-        "function add(a: number, b: number): number {\n  return a + b;\n}\n"
-        "console.log(add(2, 3));\n"
-    )
-    return repo
-
-
 class TestOfflineTranslationEndToEnd:
     def test_translates_and_runs_output(self, ts_repo, tmp_path):
         output = tmp_path / "out"

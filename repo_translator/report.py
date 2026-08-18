@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 _CONFIDENCE_THRESHOLD = 70
@@ -95,9 +95,9 @@ class TranslationReport:
         if self.manifest_translated:
             print(f"   Manifests : {len(self.manifest_translated)} translated")
         if self.tests_passed is True:
-            print(f"   🧪 Tests   : ✅ passed")
+            print("   🧪 Tests   : ✅ passed")
         elif self.tests_passed is False:
-            print(f"   🧪 Tests   : ❌ failed")
+            print("   🧪 Tests   : ❌ failed")
 
         scored = self.high_confidence + self.needs_review
         if scored:
@@ -140,6 +140,8 @@ class TranslationReport:
             },
             "files": [asdict(f) for f in self.files],
             "manifest_translated": self.manifest_translated,
+            "tests_passed": self.tests_passed,
+            "test_output": self.test_output,
         }
         json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -161,10 +163,10 @@ class TranslationReport:
         )
 
         lines = [
-            f"# Translation Report",
-            f"",
-            f"| | |",
-            f"|---|---|",
+            "# Translation Report",
+            "",
+            "| | |",
+            "|---|---|",
             f"| **From** | `{self.from_lang}` |",
             f"| **To** | `{self.to_lang}` |",
             f"| **Date** | {self.started_at} |",

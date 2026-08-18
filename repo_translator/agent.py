@@ -9,13 +9,13 @@ import subprocess
 import tempfile
 import textwrap
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
+from repo_translator.manifest import _find_manifests, translate_manifest
 from repo_translator.providers.base import LLMProvider
 from repo_translator.providers.retry import complete_with_backoff
-from repo_translator.manifest import translate_manifest, _find_manifests
-from repo_translator.report import TranslationReport, FileResult
+from repo_translator.report import FileResult, TranslationReport
 
 # ---------------------------------------------------------------------------
 # Language metadata
@@ -306,13 +306,16 @@ def _score_confidence(
         You just translated a {from_lang} file to {to_lang}. Score the translation 0–100.
 
         Consider:
-        - Constructs with no direct equivalent ({from_lang} → {to_lang}): goroutines, ownership, generics, async differences, etc.
-        - Cross-file imports that may be broken — this file was translated in isolation with no knowledge of other files in the repo.
+        - Constructs with no direct equivalent ({from_lang} → {to_lang}): goroutines,
+          ownership, generics, async differences, etc.
+        - Cross-file imports that may be broken — this file was translated in isolation
+          with no knowledge of other files in the repo.
         - TODO comments added: {todo_count}
         - Auto-run: {"passed" if run_ok else "failed"}, attempts needed: {attempts}
         - Structural distance between {from_lang} and {to_lang}
 
-        Be honest about real-world usability. A file that runs but has broken cross-file imports should score 40–60, not 90.
+        Be honest about real-world usability. A file that runs but has broken cross-file
+        imports should score 40–60, not 90.
 
         Source ({from_lang}):
         ```
@@ -455,7 +458,10 @@ def estimate_translation(
                 pass
 
     total_calls = len(files) + manifest_count
-    input_toks  = (src_chars + manifest_chars) // _CHARS_PER_TOKEN + total_calls * _PROMPT_OVERHEAD_TOKS
+    input_toks  = (
+        (src_chars + manifest_chars) // _CHARS_PER_TOKEN
+        + total_calls * _PROMPT_OVERHEAD_TOKS
+    )
     output_toks = (src_chars + manifest_chars) // _CHARS_PER_TOKEN
 
     if score_confidence:
@@ -578,7 +584,8 @@ def translate_repo(
 
         if verbose:
             print(f"  [{i}/{len(files)}] {rel}{tag}", end=" ", flush=True)
-        _emit({"type": "file_start", "index": i, "total": len(files), "path": str(rel), "is_test": is_test})
+        _emit({"type": "file_start", "index": i, "total": len(files), "path": str(rel),
+               "is_test": is_test})
 
         source_code = src_file.read_text(encoding="utf-8", errors="replace")
 
@@ -667,12 +674,20 @@ def translate_repo(
                     confidence=confidence, confidence_reason=confidence_reason,
                 ))
                 if verbose:
-                    print(f"→ ✓ (saved with warnings after {MAX_FIX_ATTEMPTS} attempts)")
-                _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
-                       "status": "ok_with_warnings", "attempts": attempts, "confidence": confidence})
+                    print(f"→ ✓ (saved with warnings after {fix_attempts} attempts)")
+                _emit({
+                    "type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                    "status": "ok_with_warnings", "attempts": attempts, "confidence": confidence,
+                })
 
     # ── 4. Run translated test suite ──────────────────────────────────────
-    if run_tests_after and test_files:
+    # Most languages only need to run the test runner when test_files were
+    # actually found (test_patterns detects them by filename). A language
+    # whose test_runner covers the whole project regardless of individual
+    # file names (test_patterns == [], e.g. rust's `cargo test`) has no way
+    # to report test_files, so it must not be gated on that list being non-empty.
+    to_test_patterns = LANGUAGE_META[to_lang].get("test_patterns", [])
+    if run_tests_after and (test_files or not to_test_patterns):
         passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
         report.tests_passed = passed
         report.test_output  = test_output

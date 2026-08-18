@@ -25,7 +25,9 @@ export interface EstimateResult {
   manifest_count: number
   input_tokens: number
   output_tokens: number
-  estimated_cost: number
+  // null for openai-compat and any provider/model pair with no known pricing
+  // (agent.estimate_translation returns None in those cases).
+  estimated_cost: number | null
   price_label: string
 }
 
@@ -66,7 +68,6 @@ export interface ReportSummary {
   manifests_translated: number
   high_confidence: number
   needs_review: number
-  tests_passed?: boolean | null
 }
 
 export interface TranslationReport {
@@ -79,6 +80,9 @@ export interface TranslationReport {
   summary: ReportSummary
   files: FileResult[]
   manifest_translated: string[]
+  // Populated only when --run-tests / run_tests was requested; null otherwise.
+  tests_passed: boolean | null
+  test_output: string | null
 }
 
 export interface TreeNode {

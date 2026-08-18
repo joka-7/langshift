@@ -4,32 +4,16 @@ Tests for repo_translator.manifest
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
+from unittest.mock import patch
 
-from repo_translator.providers.base import LLMProvider
+from helpers import MockProvider
+
 from repo_translator.manifest import (
     TARGET_MANIFEST,
     _find_manifests,
     translate_manifest,
 )
-
-
-# ─────────────────────────────────────────────
-# Mock provider
-# ─────────────────────────────────────────────
-
-class MockProvider(LLMProvider):
-    def __init__(self, response: str = "", raises: Exception | None = None):
-        self._response = response
-        self._raises   = raises
-        self.calls: list[str] = []
-
-    def complete(self, prompt: str, max_tokens: int = 8096) -> str:
-        self.calls.append(prompt)
-        if self._raises:
-            raise self._raises
-        return self._response
-
 
 # ─────────────────────────────────────────────
 # _find_manifests
@@ -73,6 +57,26 @@ class TestFindManifests:
         found = _find_manifests(tmp_path, "typescript")
         paths = [str(f) for f in found]
         assert len(paths) == len(set(paths))
+
+    def test_order_is_deterministic_across_repeated_calls(self, tmp_path):
+        # Regression: _find_manifests used to return list(set(found)), whose
+        # iteration order depends on Path hash values and is not guaranteed
+        # stable even within a single process run.
+        (tmp_path / "requirements.txt").write_text("")
+        (tmp_path / "pyproject.toml").write_text("")
+        (tmp_path / "Pipfile").write_text("")
+        first = [str(f) for f in _find_manifests(tmp_path, "python")]
+        for _ in range(20):
+            assert [str(f) for f in _find_manifests(tmp_path, "python")] == first
+
+    def test_order_follows_pattern_priority(self, tmp_path):
+        # MANIFEST_FILES["python"] lists requirements.txt before pyproject.toml
+        # before Pipfile — that priority should be reflected in the result.
+        (tmp_path / "Pipfile").write_text("")
+        (tmp_path / "pyproject.toml").write_text("")
+        (tmp_path / "requirements.txt").write_text("")
+        found = _find_manifests(tmp_path, "python")
+        assert [f.name for f in found] == ["requirements.txt", "pyproject.toml", "Pipfile"]
 
 
 # ─────────────────────────────────────────────
@@ -126,11 +130,15 @@ class TestTranslateManifest:
         assert (out / TARGET_MANIFEST["python"]).exists()
 
     def test_api_error_is_handled_gracefully(self, tmp_path):
+        # "rate limit" makes complete_with_backoff retry for real before giving
+        # up (MAX_RETRIES attempts of real exponential backoff); mock time.sleep
+        # so this test doesn't take ~60s. See test_retry.py for backoff coverage.
         (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
         out      = tmp_path / "out"
         provider = MockProvider(raises=Exception("rate limit"))
 
-        result = translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=False)
+        with patch("repo_translator.providers.retry.time.sleep"):
+            result = translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=False)
         assert result["found"] == 1
         assert result["translated"] == []
 
@@ -154,3 +162,81 @@ class TestTranslateManifest:
         prompt = provider.calls[0]
         assert "typescript" in prompt.lower()
         assert "python" in prompt.lower()
+
+    def test_multiple_manifests_mapping_to_same_target_do_not_clobber(self, tmp_path):
+        # Regression: requirements.txt and pyproject.toml both target
+        # requirements.txt when translating python -> javascript's inverse
+        # (here: two python manifests both -> package.json going to js).
+        # Both used to write to the identical dest_file, so the second
+        # write silently discarded the first manifest's translation.
+        (tmp_path / "requirements.txt").write_text(SAMPLE_REQUIREMENTS)
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+        out = tmp_path / "out"
+        provider = MockProvider('{"dependencies": {"flask": "*"}}',
+                                 '{"dependencies": {"other": "*"}}')
+
+        result = translate_manifest(provider, tmp_path, out, "python", "javascript", verbose=False)
+
+        assert result["found"] == 2
+        assert len(result["translated"]) == 2
+        # Both outputs must exist — neither translation was lost.
+        written = {Path(p).name for p in result["translated"]}
+        assert len(written) == 2
+        assert (out / "package.json").exists()
+        assert any(name != "package.json" for name in written)
+
+    def test_repeated_runs_produce_identical_manifest_selection(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text(SAMPLE_REQUIREMENTS)
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+
+        def _run():
+            out = tmp_path / "out"
+            provider = MockProvider("flask>=2.0", "numpy>=1.0")
+            result = translate_manifest(provider, tmp_path, out, "python", "python", verbose=False)
+            names = sorted(Path(p).name for p in result["translated"])
+            for p in result["translated"]:
+                Path(p).unlink()
+            return names
+
+        first = _run()
+        for _ in range(5):
+            assert _run() == first
+
+
+class TestTranslateManifestVerboseOutput:
+    """verbose=True print branches — every other test in this file passes verbose=False."""
+
+    def test_prints_translating_and_written_lines(self, tmp_path, capsys):
+        (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
+        out = tmp_path / "out"
+        provider = MockProvider(SAMPLE_REQUIREMENTS)
+
+        translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=True)
+
+        out_text = capsys.readouterr().out
+        assert "Translating manifest" in out_text
+        assert "package.json" in out_text
+        assert "Written to" in out_text
+
+    def test_prints_failure_message_on_error(self, tmp_path, capsys):
+        (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
+        out = tmp_path / "out"
+        provider = MockProvider(raises=Exception("network unreachable"))
+
+        with patch("repo_translator.providers.retry.time.sleep"):
+            translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=True)
+
+        out_text = capsys.readouterr().out
+        assert "Failed" in out_text
+        assert "network unreachable" in out_text
+
+    def test_prints_collision_warning_when_disambiguating(self, tmp_path, capsys):
+        (tmp_path / "requirements.txt").write_text(SAMPLE_REQUIREMENTS)
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+        out = tmp_path / "out"
+        provider = MockProvider("flask>=2.0", "numpy>=1.0")
+
+        translate_manifest(provider, tmp_path, out, "python", "python", verbose=True)
+
+        out_text = capsys.readouterr().out
+        assert "already written from another manifest" in out_text

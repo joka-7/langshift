@@ -5,10 +5,11 @@ No real network calls; time.sleep is always mocked out.
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import patch, call
+from unittest.mock import patch
 
-from repo_translator.providers.base import LLMProvider
+import pytest
+from helpers import MockProvider
+
 from repo_translator.providers.retry import (
     MAX_RETRIES,
     MAX_WAIT,
@@ -16,23 +17,6 @@ from repo_translator.providers.retry import (
     is_rate_limit_error,
     parse_retry_after,
 )
-
-
-# ─────────────────────────────────────────────
-# Mock provider
-# ─────────────────────────────────────────────
-
-class MockProvider(LLMProvider):
-    def __init__(self, *responses):
-        self._queue = list(responses)
-        self._idx   = 0
-
-    def complete(self, prompt: str, max_tokens: int = 8096) -> str:
-        resp = self._queue[min(self._idx, len(self._queue) - 1)]
-        self._idx += 1
-        if isinstance(resp, Exception):
-            raise resp
-        return resp
 
 
 def _rate_limit(msg: str = "Rate limit reached. Please try again in 30s.") -> Exception:
@@ -161,7 +145,7 @@ class TestCompleteWithBackoff:
         # Daily limit: "try again in 12h" — should not auto-wait
         provider = MockProvider(_rate_limit("try again in 12h0m0.0s"), "ok")
         with patch("repo_translator.providers.retry.time.sleep") as mock_sleep:
-            with pytest.raises(Exception):
+            with pytest.raises(Exception, match="429"):
                 complete_with_backoff(provider, "prompt")
         mock_sleep.assert_not_called()
 

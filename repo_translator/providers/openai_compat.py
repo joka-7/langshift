@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import os
+
 from repo_translator.providers.base import LLMProvider
 
 # Common base URLs for reference
@@ -19,8 +21,8 @@ class OpenAICompatProvider(LLMProvider):
     def __init__(self, model_id: str, base_url: str, api_key: str | None = None):
         try:
             import openai as _openai
-        except ImportError:
-            raise ImportError("openai package not installed. Run: pip install openai")
+        except ImportError as e:
+            raise ImportError("openai package not installed. Run: pip install openai") from e
         self._client = _openai.OpenAI(
             api_key=api_key or os.environ.get("OPENAI_COMPAT_API_KEY", "dummy"),
             base_url=base_url,
@@ -33,4 +35,7 @@ class OpenAICompatProvider(LLMProvider):
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            raise ValueError("Response had no text content")
+        return content.strip()

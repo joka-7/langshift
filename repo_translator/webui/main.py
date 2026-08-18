@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import queue
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,7 +47,7 @@ class EstimateRequest(BaseModel):
     model: str = "sonnet"
     translate_manifests: bool = True
     score_confidence: bool = True
-    base_url: Optional[str] = None
+    base_url: str | None = None
 
 
 class TranslateRequest(BaseModel):
@@ -57,9 +56,9 @@ class TranslateRequest(BaseModel):
     to_lang: str
     provider: str = "claude"
     model: str = "sonnet"
-    output_path: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    output_path: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
     run_tests: bool = False
     translate_manifests: bool = True
     score_confidence: bool = True
@@ -116,7 +115,7 @@ def post_estimate(req: EstimateRequest):
             base_url=req.base_url,
         )
     except jobs.JobError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +139,7 @@ def post_job(req: TranslateRequest):
             score_confidence=req.score_confidence,
         )
     except jobs.JobError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return job.to_dict()
 
 
@@ -251,8 +250,8 @@ def _safe_join(root: Path, rel_path: str) -> Path:
     candidate = (root / rel_path).resolve()
     try:
         candidate.relative_to(root)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid path")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid path") from e
     return candidate
 
 

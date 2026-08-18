@@ -41,12 +41,25 @@ TARGET_MANIFEST: dict[str, str] = {
 
 
 def _find_manifests(repo_path: Path, from_lang: str) -> list[Path]:
+    """
+    Returns manifests in a stable, deterministic order: by pattern (as listed
+    in MANIFEST_FILES), then alphabetically within a pattern. Path.glob()
+    itself makes no ordering guarantee and repo_path.glob(pattern) /
+    repo_path.glob(f"*/{pattern}") can overlap, so results used to be
+    round-tripped through set() — which meant the manifest order (and, since
+    translate_manifest writes same-named collisions in that order, which
+    manifest's translation "won") varied from run to run.
+    """
     patterns = MANIFEST_FILES.get(from_lang, [])
-    found = []
+    found: list[Path] = []
+    seen: set[Path] = set()
     for pattern in patterns:
-        found.extend(repo_path.glob(pattern))
-        found.extend(repo_path.glob(f"*/{pattern}"))
-    return list(set(found))
+        matches = sorted(repo_path.glob(pattern)) + sorted(repo_path.glob(f"*/{pattern}"))
+        for m in matches:
+            if m not in seen:
+                seen.add(m)
+                found.append(m)
+    return found
 
 
 def translate_manifest(
@@ -66,7 +79,8 @@ def translate_manifest(
         return {"found": 0, "translated": [], "skipped": "no manifest files found"}
 
     target_name = TARGET_MANIFEST.get(to_lang, f"dependencies.{to_lang}")
-    results = []
+    results: list[str] = []
+    used_dest_files: set[Path] = set()
 
     for manifest in manifests:
         rel = manifest.relative_to(repo_path)
@@ -96,6 +110,17 @@ Source ({from_lang} - {manifest.name}):
             dest_dir = output_path / rel.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_file = dest_dir / target_name
+            if dest_file in used_dest_files:
+                # Another manifest in this repo already translated to the same
+                # target filename (e.g. both requirements.txt and pyproject.toml
+                # map to requirements.txt). Disambiguate instead of silently
+                # overwriting the earlier translation.
+                target = Path(target_name)
+                dest_file = dest_dir / f"{target.stem}.from-{manifest.stem}{target.suffix}"
+                if verbose:
+                    print(f"    ⚠ {target_name} already written from another manifest; "
+                          f"saving as {dest_file.name}")
+            used_dest_files.add(dest_file)
             dest_file.write_text(translated_content, encoding="utf-8")
             results.append(str(dest_file))
 

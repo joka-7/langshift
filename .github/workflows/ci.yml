@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  python-tests:
+  python-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,8 +18,62 @@ jobs:
       - name: Install package + dev/webui deps
         run: pip install -e ".[dev,webui]"
 
-      - name: Run unit + integration tests
-        run: pytest
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Mypy
+        run: mypy repo_translator
+
+  python-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package + dev/webui deps
+        run: pip install -e ".[dev,webui]"
+
+      - name: Run fast unit tests (mocked providers, no subprocesses/threads)
+        run: pytest -m "not integration"
+
+  python-integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package + dev/webui deps
+        run: pip install -e ".[dev,webui]"
+
+      - name: Run integration tests (real subprocesses, file I/O, HTTP)
+        run: pytest -m integration
+
+  python-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package + dev/webui deps
+        run: pip install -e ".[dev,webui]"
+
+      - name: Run full suite with coverage gate
+        # cli.py and webui/* are only exercised by integration-marked tests, so
+        # coverage must be measured across the whole suite, not the fast lane
+        # alone (which reports ~69%). Ratchet this threshold up as gaps close
+        # (measured ~95% after closing the cli.py/report.py/agent.py/webui/
+        # providers gaps; offline/ts_to_py.py's regex table is the main
+        # remaining gap at ~90% and is intentionally lower-priority).
+        run: pytest --cov=repo_translator --cov-report=term-missing --cov-fail-under=92
 
   frontend-checks:
     runs-on: ubuntu-latest
@@ -31,17 +85,23 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # jsdom 30 (a vitest dev dependency) requires Node >=22.22.2; Node 20
+          # doesn't just warn on this — it hard-crashes at runtime inside
+          # jsdom's undici dependency ("webidl.util.markAsUncloneable is not
+          # a function").
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
       - run: npm ci
       - run: npm run lint
+      - name: Vitest unit tests
+        run: npm test
       - run: npm run build
 
   e2e:
     runs-on: ubuntu-latest
-    needs: [python-tests, frontend-checks]
+    needs: [python-lint, python-unit-tests, python-integration-tests, python-coverage, frontend-checks]
     steps:
       - uses: actions/checkout@v4
 
@@ -54,7 +114,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # jsdom 30 (a vitest dev dependency) requires Node >=22.22.2; Node 20
+          # doesn't just warn on this — it hard-crashes at runtime inside
+          # jsdom's undici dependency ("webidl.util.markAsUncloneable is not
+          # a function").
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
