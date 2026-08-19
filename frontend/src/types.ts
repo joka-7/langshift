@@ -112,4 +112,5 @@ export interface TranslateFormValues {
   translate_manifests: boolean
   score_confidence: boolean
   resume: boolean
+  cross_file_context: boolean
 }

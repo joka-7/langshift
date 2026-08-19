@@ -142,6 +142,7 @@ def start_job(
     resume: bool = False,  # default_output_path (below) isn't unique per job, so
                            # resuming by default could silently reuse a checkpoint
                            # from an unrelated earlier run against the same repo.
+    cross_file_context: bool = False,
 ) -> Job:
     repo_path = Path(input_path).expanduser()
     if not repo_path.exists():
@@ -181,7 +182,8 @@ def start_job(
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job, provider, run_tests, translate_manifests, score_confidence, resume),
+        args=(job, provider, run_tests, translate_manifests, score_confidence, resume,
+              cross_file_context),
         daemon=True,
     )
     thread.start()
@@ -195,6 +197,7 @@ def _run_job(
     translate_manifests: bool,
     score_confidence: bool,
     resume: bool,
+    cross_file_context: bool,
 ) -> None:
     try:
         report = translate_repo(
@@ -208,6 +211,7 @@ def _run_job(
             run_tests_after=run_tests,
             score_confidence=score_confidence,
             resume=resume,
+            cross_file_context=cross_file_context,
             on_progress=job.emit,
         )
         report.save(Path(job.output_path))

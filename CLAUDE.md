@@ -107,7 +107,10 @@ pyproject.toml — package config, entry points: repo-translate = repo_translato
   `_find_manifests()` returns them in a deterministic order (by pattern, then alphabetically);
   when multiple source manifests would map to the same output filename, later ones are saved
   with a disambiguating suffix instead of overwriting the first.
-- **No state between files** — each file is translated independently; there's no cross-file context passed to Claude yet (see TODO below)
+- **No state between files** — each file is translated independently. Optionally
+  (`--cross-file-context`, off by default), every prompt gets a read-only "repo map" of the
+  other files' top-level symbols — see TODO #1 below — but there's still no state carried
+  *between* file translations, just that one extra note per prompt.
 
 ### Supported languages (13 total)
 typescript, javascript, python, java, go, rust, ruby, csharp, php, kotlin, swift, cpp, c
@@ -134,7 +137,15 @@ still need no API key or network access.
 
 ## Known limitations / TODOs (good next tasks)
 
-1. **No cross-file context** — each file is translated in isolation. Claude doesn't know what other files exist or how they import each other. For large repos with complex interdependencies, this causes broken imports in the output. Fix: build a dependency graph first, pass relevant context per file.
+1. ~~**No cross-file context**~~ — **done, opt-in.** `--cross-file-context` (off by default, so
+   existing prompt shapes/cost estimates are unchanged unless requested) has `translate_repo()`
+   build a lightweight "repo map" — `_build_repo_map()` regex-extracts each source file's
+   top-level symbol names (`_extract_symbols()`, one pattern per language in
+   `_SYMBOL_PATTERNS`; unmapped languages just list filenames) — and appends a per-file,
+   self-excluded slice of it (`_format_repo_map()`, capped at `_REPO_MAP_MAX_CHARS`) after the
+   source block in every translation prompt. Still no state shared *between* file translations —
+   each prompt just gets this one extra read-only note. It's a regex heuristic, not a real
+   parser, so treat it as a hint, not a guarantee.
 
 2. **Test runner for compiled languages** — Java, Kotlin, C#, C++ don't have auto-run support
    yet. Their `test_runner` is `None`. Fix: add compile + run steps. (Rust's runner works;

@@ -15,6 +15,7 @@ const DEFAULT_VALUES: TranslateFormValues = {
   translate_manifests: true,
   score_confidence: true,
   resume: false,
+  cross_file_context: false,
 }
 
 interface Props {
@@ -208,6 +209,14 @@ export function TranslateForm({ onEstimate, onTranslate, busy }: Props) {
             onChange={(e) => set('resume', e.target.checked)}
           />
           Resume from checkpoint
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={values.cross_file_context}
+            onChange={(e) => set('cross_file_context', e.target.checked)}
+          />
+          Cross-file context
         </label>
       </div>
 

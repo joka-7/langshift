@@ -17,6 +17,9 @@ from helpers import CapturingProvider, MockProvider
 import repo_translator.agent as agent
 from repo_translator.agent import (
     LANGUAGE_META,
+    _build_repo_map,
+    _extract_symbols,
+    _format_repo_map,
     _is_test_file,
     _output_path,
     _score_confidence,
@@ -1423,6 +1426,194 @@ class TestTranslateRepoChunking:
             translate_manifests=False, verbose=False, score_confidence=False,
         )
 
-        # Runner isn't configured for go, so _try_run soft-passes and the
+        # Runner isn't configured for rust, so _try_run soft-passes and the
         # concatenation of both chunk responses is written verbatim.
         assert (out / "big.rs").read_text() == "print(1)\n" * 2
+
+
+# ─────────────────────────────────────────────
+# Cross-file context (--cross-file-context)
+# ─────────────────────────────────────────────
+
+class TestExtractSymbols:
+    def test_python_top_level_def_and_class(self):
+        source = "def foo():\n    pass\n\nclass Bar:\n    def method(self):\n        pass\n"
+        assert _extract_symbols(source, "python") == ["foo", "Bar"]
+
+    def test_python_indented_defs_not_top_level(self):
+        source = "class Bar:\n    def method(self):\n        pass\n"
+        # "method" is indented (inside the class), so it isn't picked up —
+        # only the top-level "Bar".
+        assert _extract_symbols(source, "python") == ["Bar"]
+
+    def test_typescript_exported_declarations(self):
+        source = (
+            "export function add(a, b) { return a + b; }\n"
+            "export class Widget {}\n"
+            "export const PI = 3.14;\n"
+            "function helper() {}\n"  # not exported — should be excluded
+        )
+        assert _extract_symbols(source, "typescript") == ["add", "Widget", "PI"]
+
+    def test_go_func_and_type(self):
+        source = "func Add(a, b int) int {\n\treturn a + b\n}\n\ntype Point struct{}\n"
+        assert _extract_symbols(source, "go") == ["Add", "Point"]
+
+    def test_go_method_with_receiver_captures_method_name(self):
+        source = "func (p *Point) String() string {\n\treturn \"\"\n}\n"
+        assert _extract_symbols(source, "go") == ["String"]
+
+    def test_rust_pub_items(self):
+        source = "pub fn run() {}\npub struct Config {}\nfn private_helper() {}\n"
+        assert _extract_symbols(source, "rust") == ["run", "Config"]
+
+    def test_unmapped_language_returns_empty_list(self):
+        assert _extract_symbols("class Foo {}", "cpp") == []
+        assert _extract_symbols("int main() {}", "c") == []
+
+    def test_no_duplicate_names(self):
+        source = "def foo():\n    pass\n\ndef foo():\n    pass\n"
+        assert _extract_symbols(source, "python") == ["foo"]
+
+    def test_symbol_count_capped(self):
+        source = "\n\n".join(f"def f{i}():\n    pass" for i in range(50))
+        symbols = _extract_symbols(source, "python")
+        assert len(symbols) == agent._MAX_SYMBOLS_PER_FILE
+
+
+class TestBuildRepoMap:
+    def test_maps_relative_paths_to_symbols(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "b.py").write_text("class Bar:\n    pass\n")
+        files = [tmp_path / "a.py", tmp_path / "b.py"]
+
+        repo_map = _build_repo_map(files, tmp_path, "python")
+
+        assert repo_map == {"a.py": ["foo"], "b.py": ["Bar"]}
+
+    def test_nested_paths_are_relative_to_repo_root(self, tmp_path):
+        nested = tmp_path / "pkg"
+        nested.mkdir()
+        (nested / "mod.py").write_text("def f():\n    pass\n")
+        files = [nested / "mod.py"]
+
+        repo_map = _build_repo_map(files, tmp_path, "python")
+
+        assert repo_map == {"pkg/mod.py": ["f"]}
+
+    def test_unreadable_file_is_skipped_not_raised(self, tmp_path, monkeypatch):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+
+        def _raise(self, *a, **kw):
+            raise OSError("permission denied")
+        monkeypatch.setattr(Path, "read_text", _raise)
+
+        repo_map = _build_repo_map([tmp_path / "a.py"], tmp_path, "python")
+        assert repo_map == {}
+
+
+class TestFormatRepoMap:
+    def test_excludes_the_current_file(self):
+        repo_map = {"a.py": ["foo"], "b.py": ["Bar"]}
+        formatted = _format_repo_map(repo_map, exclude="a.py")
+        assert "a.py" not in formatted
+        assert "b.py" in formatted
+
+    def test_lists_symbols_after_the_path(self):
+        formatted = _format_repo_map({"a.py": ["foo", "Bar"]}, exclude="")
+        assert formatted == "- a.py: foo, Bar"
+
+    def test_file_with_no_symbols_has_no_trailing_colon(self):
+        formatted = _format_repo_map({"a.py": []}, exclude="")
+        assert formatted == "- a.py"
+
+    def test_empty_map_returns_empty_string(self):
+        assert _format_repo_map({}, exclude="") == ""
+
+    def test_truncates_past_threshold_and_notes_omitted_count(self):
+        repo_map = {f"file{i}.py": ["sym"] for i in range(20)}
+        formatted = _format_repo_map(repo_map, exclude="", threshold=50)
+        assert "more file(s) omitted" in formatted
+        # Not every file made it into the (small) threshold.
+        assert formatted.count("- file") < 20
+
+
+class TestTranslateOnceCrossFileContext:
+    def test_no_repo_context_omits_the_note_and_listing(self):
+        provider = CapturingProvider()
+        _translate_once(provider, "x = 1\n", "python", "go")
+        assert "Other files in this repo" not in provider.last_prompt
+
+    def test_repo_context_appended_after_the_source_block(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "x = 1\n", "python", "go",
+            repo_context="- other.py: helper",
+        )
+        assert "Other files in this repo" in provider.last_prompt
+        assert "- other.py: helper" in provider.last_prompt
+        # Comes after the fenced source block, not inside it.
+        assert provider.last_prompt.index("```\n") < provider.last_prompt.index("other.py")
+
+    def test_repo_context_included_in_every_chunk(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider()
+        _translate_once(
+            provider, source, "python", "go", repo_context="- other.py: helper",
+        )
+        assert len(provider.calls) == 3
+        for call in provider.calls:
+            assert "- other.py: helper" in call
+
+
+class TestTranslateRepoCrossFileContext:
+    def test_disabled_by_default_prompt_has_no_repo_map(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "b.py").write_text("def bar():\n    pass\n")
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert all("Other files in this repo" not in c for c in provider.calls)
+
+    def test_enabled_includes_other_files_symbols_excluding_self(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "b.py").write_text("def bar():\n    pass\n")
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+            cross_file_context=True,
+        )
+
+        # files are processed in sorted order (a.py, then b.py); each call's
+        # prompt should mention the *other* file, never itself.
+        a_prompt, b_prompt = provider.calls
+        assert "b.py" in a_prompt and "bar" in a_prompt
+        assert "a.py" not in a_prompt.split("Other files in this repo")[1]
+        assert "a.py" in b_prompt and "foo" in b_prompt
+
+    def test_cross_file_context_reaches_test_retry_translation(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "a_test.py").write_text("def test_foo():\n    assert foo() is None\n")
+        out = tmp_path / "out"
+        provider = CapturingProvider("assert False")
+
+        with patch("repo_translator.agent.run_tests", return_value=(False, "boom")):
+            translate_repo(
+                tmp_path, out, "python", "rust", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True, cross_file_context=True,
+            )
+
+        # The last call is the test-retry re-translation of a_test.py; it
+        # should still carry the repo map (mentioning a.py's "foo").
+        assert "a.py" in provider.last_prompt
+        assert "foo" in provider.last_prompt

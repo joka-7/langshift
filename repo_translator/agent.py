@@ -205,6 +205,107 @@ _PROMPT_OVERHEAD_TOKS = 200
 # multi-thousand-line fixture to exercise chunking.
 CHUNK_THRESHOLD_CHARS = 12000
 
+# ---------------------------------------------------------------------------
+# Cross-file context (--cross-file-context, off by default)
+# ---------------------------------------------------------------------------
+# Each file is still translated independently — there's no shared
+# translation state — but when enabled, every prompt gets a short read-only
+# "repo map" listing the *other* source files and their top-level symbols,
+# so the model can keep cross-file imports/calls consistent instead of
+# guessing at names it's never seen.
+#
+# Regex-based, not a real parser: good enough to hint an LLM, not a
+# guarantee of completeness or precision. Unmapped languages (cpp, c —
+# their header/impl split and lack of an `export` keyword make a single
+# regex unreliable) fall back to listing filenames only, no symbols.
+_SYMBOL_PATTERNS: dict[str, re.Pattern[str]] = {
+    "typescript": re.compile(
+        r"^export\s+(?:default\s+)?(?:async\s+)?"
+        r"(?:function|class|const|let|var|interface|type|enum)\s+(\w+)",
+        re.MULTILINE,
+    ),
+    "javascript": re.compile(
+        r"^export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var)\s+(\w+)",
+        re.MULTILINE,
+    ),
+    "python": re.compile(r"^(?:def|class)\s+(\w+)", re.MULTILINE),
+    "go": re.compile(r"^(?:func\s+(?:\([^)]*\)\s+)?|type\s+)(\w+)", re.MULTILINE),
+    # Rust has an explicit visibility keyword, unlike the other languages
+    # here — so unlike them, `pub` is required, not optional: an item
+    # without it is invisible outside its module and listing it as
+    # "exported" would be actively misleading for cross-file references.
+    "rust": re.compile(r"^pub\s+(?:fn|struct|enum|trait)\s+(\w+)", re.MULTILINE),
+    "ruby": re.compile(r"^(?:def|class|module)\s+(\w+)", re.MULTILINE),
+    "csharp": re.compile(
+        r"^\s*public\s+(?:static\s+|abstract\s+|sealed\s+)*(?:class|interface|enum|struct)\s+(\w+)",
+        re.MULTILINE,
+    ),
+    "php": re.compile(r"^(?:function|class|interface|trait)\s+(\w+)", re.MULTILINE),
+    "kotlin": re.compile(r"^(?:public\s+)?(?:fun|class|interface|object)\s+(\w+)", re.MULTILINE),
+    "swift": re.compile(
+        r"^(?:public\s+|open\s+)?(?:func|class|struct|enum|protocol)\s+(\w+)", re.MULTILINE,
+    ),
+    "java": re.compile(
+        r"^\s*public\s+(?:static\s+|abstract\s+|final\s+)*(?:class|interface|enum)\s+(\w+)",
+        re.MULTILINE,
+    ),
+}
+_MAX_SYMBOLS_PER_FILE  = 20
+_REPO_MAP_MAX_CHARS    = 4000  # caps the repo map's contribution to prompt size
+
+
+def _extract_symbols(source_code: str, lang: str) -> list[str]:
+    """Best-effort top-level symbol names for lang. See _SYMBOL_PATTERNS."""
+    pattern = _SYMBOL_PATTERNS.get(lang)
+    if pattern is None:
+        return []
+    names: list[str] = []
+    for m in pattern.finditer(source_code):
+        name = m.group(1)
+        if name not in names:
+            names.append(name)
+        if len(names) >= _MAX_SYMBOLS_PER_FILE:
+            break
+    return names
+
+
+def _build_repo_map(files: list[Path], repo_path: Path, from_lang: str) -> dict[str, list[str]]:
+    """{relative_path: [top-level symbol names]} for every collected source file."""
+    repo_map: dict[str, list[str]] = {}
+    for f in files:
+        try:
+            source = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        repo_map[str(f.relative_to(repo_path))] = _extract_symbols(source, from_lang)
+    return repo_map
+
+
+def _format_repo_map(
+    repo_map: dict[str, list[str]], exclude: str, threshold: int = _REPO_MAP_MAX_CHARS,
+) -> str:
+    """
+    Render repo_map as a prompt-ready listing, excluding the file currently
+    being translated (it doesn't need a map entry for itself). Stops adding
+    entries once `threshold` chars are reached and notes how many were left
+    out, rather than growing the prompt unbounded for large repos.
+    """
+    lines: list[str] = []
+    total = 0
+    omitted = 0
+    for path, symbols in repo_map.items():
+        if path == exclude:
+            continue
+        entry = f"- {path}" + (f": {', '.join(symbols)}" if symbols else "")
+        if total + len(entry) > threshold:
+            omitted += 1
+            continue
+        lines.append(entry)
+        total += len(entry)
+    if omitted:
+        lines.append(f"... ({omitted} more file(s) omitted)")
+    return "\n".join(lines)
+
 # (provider, model_name) → (input $/MTok, output $/MTok)
 # Groq has a free tier (rate-limited); prices below are for paid/on-demand usage.
 # openai-compat pricing is unknown (varies by service) — will show None in estimate.
@@ -298,6 +399,7 @@ def _translate_chunk(
     error_context: str | None = None,
     chunk_index: int | None = None,
     chunk_total: int | None = None,
+    repo_context: str | None = None,
 ) -> str:
     fix_note = ""
     if error_context:
@@ -327,6 +429,19 @@ def _translate_chunk(
           translations will be concatenated in order to form the final file.
         """
 
+    # A single short line, not a multi-line block: it's interpolated inside
+    # the dedented template below (see the NOTE further down), and unlike
+    # source_code it never contains a fenced code block that reindenting
+    # could break — but it still shouldn't introduce a *different* common
+    # indentation than the rest of the template. The repo map's actual
+    # (multi-line, zero-indent) content is appended after the dedent instead.
+    repo_note = (
+        "\n        - Other files in this repo and their exported top-level symbols are "
+        "listed after the source below — use them only to keep cross-file references "
+        "(imports, calls) consistent; do not translate or restate that list."
+        if repo_context else ""
+    )
+
     # NOTE: source_code is appended *after* dedent. If it were interpolated
     # inside the dedented block, its un-indented lines would defeat
     # textwrap.dedent's common-prefix calculation and leak the template's
@@ -341,10 +456,12 @@ def _translate_chunk(
         - Use idiomatic {to_lang} patterns and standard library where possible.
         - Replace language-specific imports/packages with {to_lang} equivalents.
         - If a direct equivalent doesn't exist, write a clear TODO comment.
-        {test_note}{fix_note}{chunk_note}
+        {test_note}{fix_note}{chunk_note}{repo_note}
     """).strip()
 
     prompt = f"{instructions}\n\nSource ({from_lang}):\n```\n{source_code}\n```"
+    if repo_context:
+        prompt += f"\n\nOther files in this repo:\n{repo_context}"
 
     return complete_with_backoff(provider, prompt, max_tokens=8096)
 
@@ -356,20 +473,27 @@ def _translate_once(
     to_lang: str,
     is_test: bool = False,
     error_context: str | None = None,
+    repo_context: str | None = None,
 ) -> str:
     """
     Translate one file's source. Transparent to callers: this always
     returns one translated string per call, whether it took one provider
     call or — for a file over CHUNK_THRESHOLD_CHARS — several, chunked by
-    _split_into_chunks and concatenated in order.
+    _split_into_chunks and concatenated in order. repo_context, if given
+    (see _format_repo_map), is a read-only "here's the rest of the repo"
+    note included in every chunk's prompt — it isn't shared translation
+    state, just extra context for that one call.
     """
     chunks = _split_into_chunks(source_code, threshold=CHUNK_THRESHOLD_CHARS)
     if len(chunks) == 1:
-        return _translate_chunk(provider, source_code, from_lang, to_lang, is_test, error_context)
+        return _translate_chunk(
+            provider, source_code, from_lang, to_lang, is_test, error_context,
+            repo_context=repo_context,
+        )
     return "".join(
         _translate_chunk(
             provider, chunk, from_lang, to_lang, is_test, error_context,
-            chunk_index=idx, chunk_total=len(chunks),
+            chunk_index=idx, chunk_total=len(chunks), repo_context=repo_context,
         )
         for idx, chunk in enumerate(chunks, 1)
     )
@@ -668,6 +792,7 @@ def _run_tests_with_retry(
     test_files: list[Path],
     verbose: bool,
     on_progress: Callable[[dict], None] | None,
+    repo_map: dict[str, list[str]] | None = None,
 ) -> tuple[bool, str]:
     """
     Run the translated test suite, retrying like the source-file auto-fix
@@ -700,10 +825,12 @@ def _run_tests_with_retry(
             source_code = src_file.read_text(encoding="utf-8", errors="replace")
             if not source_code.strip():
                 continue
+            rel = str(src_file.relative_to(repo_path))
+            repo_context = _format_repo_map(repo_map, exclude=rel) if repo_map else None
             try:
                 translated_code = _translate_once(
                     provider, source_code, from_lang, to_lang,
-                    is_test=True, error_context=test_output,
+                    is_test=True, error_context=test_output, repo_context=repo_context,
                 )
             except Exception as e:
                 if verbose:
@@ -728,6 +855,7 @@ def translate_repo(
     run_tests_after: bool = False,
     score_confidence: bool = True,
     resume: bool = True,
+    cross_file_context: bool = False,
     on_progress: Callable[[dict], None] | None = None,
 ) -> TranslationReport:
     """
@@ -748,6 +876,14 @@ def translate_repo(
     trusted only if it still exists on disk. A checkpoint for a different
     repo or language pair (e.g. output_path reused for an unrelated run) is
     never applied. Pass resume=False to always start from scratch.
+
+    cross_file_context: off by default, to keep existing prompt shapes and
+    cost estimates unchanged unless opted in. When True, every file's
+    prompt gets a read-only "repo map" listing the *other* source files and
+    their top-level symbols (see _build_repo_map/_format_repo_map), to help
+    the model keep cross-file imports/calls consistent. Each file is still
+    translated independently — there's no translation state shared between
+    files, just this one extra note per prompt.
     """
     def _emit(event: dict) -> None:
         if on_progress:
@@ -787,6 +923,8 @@ def translate_repo(
 
     if verbose:
         print(f"\n  Found {len(src_files)} source + {len(test_files)} test file(s) → {to_lang}\n")
+
+    repo_map = _build_repo_map(files, repo_path, from_lang) if cross_file_context else {}
 
     checkpoint = _load_checkpoint(output_path, repo_path, from_lang, to_lang) if resume else {}
     if checkpoint and verbose:
@@ -831,6 +969,8 @@ def translate_repo(
         if chunk_count > 1 and verbose:
             print(f"(split into {chunk_count} chunks)", end=" ", flush=True)
 
+        repo_context = _format_repo_map(repo_map, exclude=str(rel)) if cross_file_context else None
+
         error_ctx  = None
         final_code = ""
         attempts   = 0
@@ -842,7 +982,7 @@ def translate_repo(
             try:
                 translated_code = _translate_once(
                     provider, source_code, from_lang, to_lang,
-                    is_test=is_test, error_context=error_ctx,
+                    is_test=is_test, error_context=error_ctx, repo_context=repo_context,
                 )
             except Exception as e:
                 if verbose:
@@ -929,7 +1069,7 @@ def translate_repo(
     if run_tests_after and (test_files or not to_test_patterns):
         passed, test_output = _run_tests_with_retry(
             provider, repo_path, output_path, from_lang, to_lang,
-            test_files, verbose, on_progress,
+            test_files, verbose, on_progress, repo_map=repo_map,
         )
         report.tests_passed = passed
         report.test_output  = test_output

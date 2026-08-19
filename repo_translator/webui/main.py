@@ -63,6 +63,7 @@ class TranslateRequest(BaseModel):
     translate_manifests: bool = True
     score_confidence: bool = True
     resume: bool = False
+    cross_file_context: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +140,7 @@ def post_job(req: TranslateRequest):
             translate_manifests=req.translate_manifests,
             score_confidence=req.score_confidence,
             resume=req.resume,
+            cross_file_context=req.cross_file_context,
         )
     except jobs.JobError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

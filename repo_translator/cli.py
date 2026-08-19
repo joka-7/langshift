@@ -76,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Resume an interrupted run using the output directory's checkpoint "
                              "(.translation_state.json), skipping already-completed files. "
                              "Use --no-resume to always start from scratch. (default: --resume)")
+    parser.add_argument("--cross-file-context", action="store_true",
+                        help="Give every file's translation prompt a read-only map of the "
+                             "other source files and their top-level symbols, to help keep "
+                             "cross-file imports/calls consistent. Off by default: increases "
+                             "prompt size per file.")
     parser.add_argument("--quiet",    "-q", action="store_true",
                         help="Suppress progress output")
     return parser
@@ -178,6 +183,7 @@ def main() -> None:
         run_tests_after=args.run_tests,
         score_confidence=not args.no_confidence,
         resume=args.resume,
+        cross_file_context=args.cross_file_context,
     )
 
     report.print_summary()

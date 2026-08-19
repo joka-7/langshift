@@ -58,6 +58,7 @@ export function postJob(values: TranslateFormValues): Promise<JobSummary> {
       api_key: values.api_key || undefined,
       run_tests: values.run_tests,
       resume: values.resume,
+      cross_file_context: values.cross_file_context,
     }),
   })
 }
