@@ -18,10 +18,15 @@ class TestFileResult:
         assert f.attempts == 1
         assert f.error is None
         assert f.run_output is None
+        assert f.chunks is None
 
     def test_stores_error(self):
         f = FileResult(path="x.ts", status="failed", error="SyntaxError")
         assert f.error == "SyntaxError"
+
+    def test_stores_chunks(self):
+        f = FileResult(path="big.ts", status="ok", chunks=3)
+        assert f.chunks == 3
 
 
 # ─────────────────────────────────────────────
@@ -164,6 +169,28 @@ class TestTranslationReportSave:
         r.save(tmp_path)
         data = json.loads((tmp_path / "translation_report.json").read_text())
         assert len(data["files"]) == 4
+
+    def test_json_round_trips_chunks(self, tmp_path):
+        r = _make_report()
+        r.files = [FileResult("big.ts", "ok", chunks=4), FileResult("small.ts", "ok")]
+        r.save(tmp_path)
+        data = json.loads((tmp_path / "translation_report.json").read_text())
+        assert data["files"][0]["chunks"] == 4
+        assert data["files"][1]["chunks"] is None
+
+    def test_markdown_notes_chunked_file(self, tmp_path):
+        r = _make_report()
+        r.files = [FileResult("big.ts", "ok", chunks=4)]
+        r.save(tmp_path)
+        md = (tmp_path / "translation_report.md").read_text()
+        assert "split into 4 chunks" in md
+
+    def test_markdown_unchunked_file_has_no_chunk_note(self, tmp_path):
+        r = _make_report()
+        r.files = [FileResult("small.ts", "ok")]
+        r.save(tmp_path)
+        md = (tmp_path / "translation_report.md").read_text()
+        assert "chunks" not in md
 
     def test_json_elapsed_seconds(self, tmp_path):
         r = self._full_report()

@@ -5,6 +5,7 @@ Core translation agent — reads files, translates via LLM provider, runs & fixe
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -195,6 +196,15 @@ MAX_FIX_ATTEMPTS = 3
 _CHARS_PER_TOKEN      = 4
 _PROMPT_OVERHEAD_TOKS = 200
 
+# Files larger than this get split into several translation calls (see
+# _split_into_chunks) instead of one — both to stay well under the
+# max_tokens=8096 output cap in _translate_chunk (a same-sized-or-larger
+# translated file could otherwise get truncated) and to avoid overrunning
+# smaller providers' context windows. Kept as a module constant, not a
+# hardcoded literal, so tests can lower it instead of generating a
+# multi-thousand-line fixture to exercise chunking.
+CHUNK_THRESHOLD_CHARS = 12000
+
 # (provider, model_name) → (input $/MTok, output $/MTok)
 # Groq has a free tier (rate-limited); prices below are for paid/on-demand usage.
 # openai-compat pricing is unknown (varies by service) — will show None in estimate.
@@ -240,13 +250,54 @@ def price_label(provider: str, model: str, base_url: str | None = None) -> str:
 # Translation helpers
 # ---------------------------------------------------------------------------
 
-def _translate_once(
+def _split_into_chunks(
+    source_code: str, threshold: int = CHUNK_THRESHOLD_CHARS,
+) -> list[str]:
+    """
+    Split source_code into chunks at blank-line boundaries — a language-
+    agnostic stand-in for "top-level boundary" that keeps a chunk from
+    cutting a function/class body in half — greedily packing consecutive
+    blocks up to `threshold` chars each. A single block that alone exceeds
+    the threshold is kept whole rather than split further (an oversized
+    chunk is recoverable; a syntactically broken one usually isn't).
+
+    Returns [source_code] unchanged when it's already at or under the
+    threshold, which is the common case and keeps single-call callers
+    (the vast majority of files) on the original one-prompt-per-file path.
+    """
+    if len(source_code) <= threshold:
+        return [source_code]
+
+    # Capture the blank-line separators themselves so concatenating the
+    # blocks back together reproduces the original text exactly.
+    parts = re.split(r"(\n[ \t]*\n)", source_code)
+    blocks = [
+        parts[i] + (parts[i + 1] if i + 1 < len(parts) else "")
+        for i in range(0, len(parts), 2)
+    ]
+
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        if current and len(current) + len(block) > threshold:
+            chunks.append(current)
+            current = block
+        else:
+            current += block
+    if current:
+        chunks.append(current)
+    return chunks or [source_code]
+
+
+def _translate_chunk(
     provider: LLMProvider,
     source_code: str,
     from_lang: str,
     to_lang: str,
     is_test: bool = False,
     error_context: str | None = None,
+    chunk_index: int | None = None,
+    chunk_total: int | None = None,
 ) -> str:
     fix_note = ""
     if error_context:
@@ -267,6 +318,15 @@ def _translate_once(
         - Use {framework} idioms (describe/it, def test_, #[test], etc.).
         """
 
+    chunk_note = ""
+    if chunk_total is not None and chunk_total > 1:
+        chunk_note = f"""
+        - This is chunk {chunk_index} of {chunk_total} of ONE larger file, split only because
+          of its size. Translate just this chunk's code, exactly as given, with no added
+          file-level framing (no extra imports, no repeated boilerplate). The chunks'
+          translations will be concatenated in order to form the final file.
+        """
+
     # NOTE: source_code is appended *after* dedent. If it were interpolated
     # inside the dedented block, its un-indented lines would defeat
     # textwrap.dedent's common-prefix calculation and leak the template's
@@ -281,12 +341,38 @@ def _translate_once(
         - Use idiomatic {to_lang} patterns and standard library where possible.
         - Replace language-specific imports/packages with {to_lang} equivalents.
         - If a direct equivalent doesn't exist, write a clear TODO comment.
-        {test_note}{fix_note}
+        {test_note}{fix_note}{chunk_note}
     """).strip()
 
     prompt = f"{instructions}\n\nSource ({from_lang}):\n```\n{source_code}\n```"
 
     return complete_with_backoff(provider, prompt, max_tokens=8096)
+
+
+def _translate_once(
+    provider: LLMProvider,
+    source_code: str,
+    from_lang: str,
+    to_lang: str,
+    is_test: bool = False,
+    error_context: str | None = None,
+) -> str:
+    """
+    Translate one file's source. Transparent to callers: this always
+    returns one translated string per call, whether it took one provider
+    call or — for a file over CHUNK_THRESHOLD_CHARS — several, chunked by
+    _split_into_chunks and concatenated in order.
+    """
+    chunks = _split_into_chunks(source_code, threshold=CHUNK_THRESHOLD_CHARS)
+    if len(chunks) == 1:
+        return _translate_chunk(provider, source_code, from_lang, to_lang, is_test, error_context)
+    return "".join(
+        _translate_chunk(
+            provider, chunk, from_lang, to_lang, is_test, error_context,
+            chunk_index=idx, chunk_total=len(chunks),
+        )
+        for idx, chunk in enumerate(chunks, 1)
+    )
 
 
 def _score_confidence(
@@ -741,6 +827,10 @@ def translate_repo(
                    "status": "skipped", "attempts": 0, "confidence": None})
             continue
 
+        chunk_count = len(_split_into_chunks(source_code, threshold=CHUNK_THRESHOLD_CHARS))
+        if chunk_count > 1 and verbose:
+            print(f"(split into {chunk_count} chunks)", end=" ", flush=True)
+
         error_ctx  = None
         final_code = ""
         attempts   = 0
@@ -760,6 +850,7 @@ def translate_repo(
                 report.files.append(FileResult(
                     path=str(rel), status="failed",
                     attempts=attempt, error=str(e),
+                    chunks=chunk_count if chunk_count > 1 else None,
                 ))
                 _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
@@ -785,6 +876,7 @@ def translate_repo(
                     path=str(rel), status=status,
                     attempts=attempt, run_output=run_output,
                     confidence=confidence, confidence_reason=confidence_reason,
+                    chunks=chunk_count if chunk_count > 1 else None,
                 ))
                 _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 if verbose:
@@ -817,6 +909,7 @@ def translate_repo(
                     path=str(rel), status="ok_with_warnings",
                     attempts=attempts, error=error_ctx,
                     confidence=confidence, confidence_reason=confidence_reason,
+                    chunks=chunk_count if chunk_count > 1 else None,
                 ))
                 _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 if verbose:

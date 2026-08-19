@@ -14,11 +14,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from helpers import CapturingProvider, MockProvider
 
+import repo_translator.agent as agent
 from repo_translator.agent import (
     LANGUAGE_META,
     _is_test_file,
     _output_path,
     _score_confidence,
+    _split_into_chunks,
     _translate_once,
     _try_run,
     collect_files,
@@ -1259,3 +1261,168 @@ class TestTranslateOncePrompt:
             provider, "x = 1", "python", "swift", is_test=True,
         )
         assert "the standard test framework" in provider.last_prompt
+
+
+# ─────────────────────────────────────────────
+# _split_into_chunks / large-file chunking
+# ─────────────────────────────────────────────
+
+class TestSplitIntoChunks:
+    def test_source_under_threshold_returned_unchanged(self):
+        source = "a = 1\n\nb = 2\n"
+        assert _split_into_chunks(source, threshold=1000) == [source]
+
+    def test_source_exactly_at_threshold_not_split(self):
+        source = "x" * 50
+        assert _split_into_chunks(source, threshold=50) == [source]
+
+    def test_splits_at_blank_line_boundaries(self):
+        block_a = "def a():\n    pass"
+        block_b = "def b():\n    pass"
+        block_c = "def c():\n    pass"
+        source = f"{block_a}\n\n{block_b}\n\n{block_c}"
+        chunks = _split_into_chunks(source, threshold=len(block_a) + 1)
+        assert len(chunks) > 1
+        # No chunk boundary falls inside a block.
+        for block in (block_a, block_b, block_c):
+            assert sum(block in c for c in chunks) == 1
+
+    def test_concatenated_chunks_reproduce_source_exactly(self):
+        source = "one\n\ntwo\n\nthree\n\nfour\n\nfive\n"
+        chunks = _split_into_chunks(source, threshold=8)
+        assert len(chunks) > 1
+        assert "".join(chunks) == source
+
+    def test_greedily_packs_small_blocks_together(self):
+        source = "a\n\nb\n\nc\n\nd\n"
+        chunks = _split_into_chunks(source, threshold=100)
+        # Well under the threshold — everything fits in one chunk even
+        # though there are several blank-line-separated blocks.
+        assert chunks == [source]
+
+    def test_single_oversized_block_kept_whole_rather_than_split(self):
+        # No blank lines at all: nothing to split on, so the whole thing
+        # is returned as one (oversized) chunk rather than dropped or cut
+        # mid-line.
+        source = "x = 1\n" * 100
+        chunks = _split_into_chunks(source, threshold=10)
+        assert chunks == [source]
+
+    def test_default_threshold_is_the_module_constant(self):
+        short = "a = 1\n"
+        assert _split_into_chunks(short) == [short]
+        long_source = "a" * (agent.CHUNK_THRESHOLD_CHARS + 1)
+        assert _split_into_chunks(long_source) == [long_source]  # no blank line to split on
+
+
+class TestTranslateOnceChunking:
+    def test_small_file_makes_a_single_provider_call(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 10_000)
+        provider = CapturingProvider("translated")
+        result = _translate_once(provider, "x = 1\n", "python", "rust")
+        assert len(provider.calls) == 1
+        assert result == "translated"
+
+    def test_large_file_is_split_into_multiple_calls(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider("OUT")
+        result = _translate_once(provider, source, "python", "rust")
+        assert len(provider.calls) == 3
+        assert result == "OUTOUTOUT"  # concatenated, in order
+
+    def test_chunk_prompts_are_numbered_and_note_the_total(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider("OUT")
+        _translate_once(provider, source, "python", "rust")
+        assert "chunk 1 of 3" in provider.calls[0]
+        assert "chunk 2 of 3" in provider.calls[1]
+        assert "chunk 3 of 3" in provider.calls[2]
+
+    def test_unchunked_prompt_has_no_chunk_note(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 10_000)
+        provider = CapturingProvider()
+        _translate_once(provider, "x = 1\n", "python", "rust")
+        assert "chunk" not in provider.last_prompt.lower()
+
+    def test_error_context_and_is_test_carried_into_every_chunk(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider("OUT")
+        _translate_once(
+            provider, source, "python", "rust",
+            is_test=True, error_context="boom: it broke",
+        )
+        assert len(provider.calls) == 3
+        for call in provider.calls:
+            assert "TEST file" in call
+            assert "boom: it broke" in call
+
+    def test_chunk_boundary_source_preserved_verbatim_across_calls(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        block_a = "a" * 10
+        block_b = "b" * 10
+        source = f"{block_a}\n\n{block_b}"
+        provider = CapturingProvider("OUT")
+        _translate_once(provider, source, "python", "rust")
+        assert block_a in provider.calls[0]
+        assert block_b not in provider.calls[0]
+        assert block_b in provider.calls[1]
+
+
+class TestTranslateRepoChunking:
+    def test_large_file_records_chunk_count_in_file_result(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        (tmp_path / "big.py").write_text("a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10)
+        out = tmp_path / "out"
+        provider = MockProvider("OUT")
+
+        report = translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert report.files[0].status == "ok"
+        assert report.files[0].chunks == 3
+
+    def test_small_file_leaves_chunks_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 10_000)
+        (tmp_path / "small.py").write_text("x = 1\n")
+        out = tmp_path / "out"
+        provider = MockProvider("y = 1")
+
+        report = translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert report.files[0].chunks is None
+
+    def test_verbose_output_notes_the_chunk_count(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        (tmp_path / "big.py").write_text("a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10)
+        out = tmp_path / "out"
+        provider = MockProvider("OUT")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=True, score_confidence=False,
+        )
+
+        assert "(split into 3 chunks)" in capsys.readouterr().out
+
+    def test_chunked_translation_written_concatenated_to_output_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        (tmp_path / "big.py").write_text("a" * 10 + "\n\n" + "b" * 10)
+        out = tmp_path / "out"
+        provider = MockProvider("print(1)\n")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        # Runner isn't configured for go, so _try_run soft-passes and the
+        # concatenation of both chunk responses is written verbatim.
+        assert (out / "big.rs").read_text() == "print(1)\n" * 2

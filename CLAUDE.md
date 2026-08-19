@@ -151,7 +151,13 @@ still need no API key or network access.
    (line-shape regex), and `go.mod` (`module` directive). On failure it retries once with the
    parse error fed back as `error_context`, then reports `validation_failed`.
 
-5. **Large files** — files over ~4000 lines may hit the context window. Fix: add chunking logic, translate function-by-function for large files.
+5. ~~**Large files**~~ — **done.** Files over `CHUNK_THRESHOLD_CHARS` (12,000 chars, a module
+   constant in `agent.py`) are split at blank-line boundaries (`_split_into_chunks()`) —
+   greedily packed so no chunk cuts a function/class body in half, with a single oversized
+   block kept whole rather than split further. Each chunk gets its own translation call noting
+   "chunk N of M"; the results are concatenated in order. Transparent to callers — the retry
+   loop and test-suite retry both call `_translate_once()` once per attempt either way.
+   `FileResult.chunks` records the count (`None` when not chunked) and shows up in the report.
 
 6. **Monorepos with mixed languages** — `collect_files()` only handles one source language. Fix: detect language per directory.
 

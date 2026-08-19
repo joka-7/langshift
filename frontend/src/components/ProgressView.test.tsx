@@ -91,6 +91,17 @@ describe('ProgressView', () => {
     expect(screen.getByText(/a\.ts → ok \(attempts: 1, confidence: 92\)/)).toBeInTheDocument()
   })
 
+  it('describes a tests_retry event', () => {
+    render(<ProgressView jobId="job-1" onFinished={vi.fn()} />)
+    const source = FakeEventSource.instances[0]
+
+    act(() => {
+      source.emitMessage({ type: 'tests_retry', attempt: 2, total: 3 })
+    })
+
+    expect(screen.getByText('Tests failed, retrying (attempt 2/3)...')).toBeInTheDocument()
+  })
+
   it('describes the finished event summary', () => {
     render(<ProgressView jobId="job-1" onFinished={vi.fn()} />)
     const source = FakeEventSource.instances[0]
