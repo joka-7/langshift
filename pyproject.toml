@@ -46,6 +46,19 @@ all-providers = [
     "ollama>=0.1",
     "groq>=0.9",
 ]
+# --backend model-dispatcher (see repo_translator/providers/model_dispatcher_provider.py).
+# Pulled in with model-dispatcher's own [openai,anthropic,gemini] extras — those
+# cover claude/openai/gemini/groq (Groq is an `openai`-SDK adapter there too) —
+# note its `gemini` extra installs `google-genai`, not this repo's own `gemini`
+# extra's `google-generativeai`; the two SDKs don't overlap.
+# ModelDispatcher is currently a private repo: this URL only resolves for
+# someone with git access to it (`pip install`'s git+https prompts for
+# credentials, or reads them from your normal git credential helper — nothing
+# repo-translator-specific to configure). Not part of `dev`/`all-providers` so
+# CI and the default install never need that access.
+model-dispatcher = [
+    "model-dispatcher[openai,anthropic,gemini] @ git+https://github.com/joka-7/ModelDispatcher.git@0b265175ee96c5681f98482bee1e428d25cfa9a2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -86,6 +99,16 @@ ignore_missing_imports = true
 # The optional provider SDKs (openai, google-generativeai, ollama, groq) are
 # imported lazily inside functions so the package works without them
 # installed; ignore_missing_imports keeps mypy usable without all extras.
+
+[[tool.mypy.overrides]]
+# model-dispatcher (the [model-dispatcher] extra) requires Python >=3.12 and
+# uses 3.12-only syntax (PEP 695 `type` statements) in its own source. mypy
+# would otherwise try to parse that source under this project's
+# python_version = "3.10" target and fail on syntax it doesn't have anything
+# to do with checking here. follow_imports = "skip" treats it as opaque/Any
+# instead — repo_translator's own use of it is still checked normally.
+module = "model_dispatcher.*"
+follow_imports = "skip"
 
 [project.scripts]
 repo-translate = "repo_translator.cli:main"
