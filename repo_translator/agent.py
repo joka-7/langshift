@@ -513,6 +513,64 @@ def _summary(report: TranslationReport) -> dict:
     }
 
 
+def _run_tests_with_retry(
+    provider: LLMProvider,
+    repo_path: Path,
+    output_path: Path,
+    from_lang: str,
+    to_lang: str,
+    test_files: list[Path],
+    verbose: bool,
+    on_progress: Callable[[dict], None] | None,
+) -> tuple[bool, str]:
+    """
+    Run the translated test suite, retrying like the source-file auto-fix
+    loop does: on failure, re-translate every test file with the runner's
+    output as error_context and run again, up to the provider's
+    max_fix_attempts (the offline provider's max_fix_attempts=1 means no
+    retries, same as for source files).
+
+    Unlike the source-file loop, there's no reliable way to tell which
+    individual test file caused a failure from arbitrary test-runner output
+    across 13 languages' test frameworks — so a retry re-translates every
+    test file, not just the failing one(s).
+    """
+    def _emit(event: dict) -> None:
+        if on_progress:
+            on_progress(event)
+
+    max_attempts = getattr(provider, "max_fix_attempts", MAX_FIX_ATTEMPTS)
+    passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
+
+    attempt = 1
+    while not passed and attempt < max_attempts and test_files:
+        attempt += 1
+        if verbose:
+            print(f"\n  🔁 Test suite failed, re-translating {len(test_files)} "
+                  f"test file(s) (attempt {attempt}/{max_attempts})...")
+        _emit({"type": "tests_retry", "attempt": attempt, "total": max_attempts})
+
+        for src_file in test_files:
+            source_code = src_file.read_text(encoding="utf-8", errors="replace")
+            if not source_code.strip():
+                continue
+            try:
+                translated_code = _translate_once(
+                    provider, source_code, from_lang, to_lang,
+                    is_test=True, error_context=test_output,
+                )
+            except Exception as e:
+                if verbose:
+                    print(f"    ✗ Failed to re-translate {src_file.name}: {e}")
+                continue  # leave the previous translation of this file in place
+            dest = _output_path(src_file, repo_path, output_path, to_lang)
+            dest.write_text(translated_code, encoding="utf-8")
+
+        passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
+
+    return passed, test_output
+
+
 def translate_repo(
     repo_path: Path,
     output_path: Path,
@@ -531,6 +589,7 @@ def translate_repo(
       {"type": "file_start", "index": int, "total": int, "path": str, "is_test": bool}
       {"type": "file_done", "index": int, "total": int, "path": str, "status": str,
        "attempts": int, "confidence": int | None}
+      {"type": "tests_retry", "attempt": int, "total": int}
       {"type": "tests_done", "passed": bool}
       {"type": "finished", "summary": dict}
     Consumers (e.g. the web UI) use this to stream live progress; the CLI doesn't pass it.
@@ -688,7 +747,10 @@ def translate_repo(
     # to report test_files, so it must not be gated on that list being non-empty.
     to_test_patterns = LANGUAGE_META[to_lang].get("test_patterns", [])
     if run_tests_after and (test_files or not to_test_patterns):
-        passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
+        passed, test_output = _run_tests_with_retry(
+            provider, repo_path, output_path, from_lang, to_lang,
+            test_files, verbose, on_progress,
+        )
         report.tests_passed = passed
         report.test_output  = test_output
         _emit({"type": "tests_done", "passed": passed})

@@ -28,6 +28,7 @@ from repo_translator.agent import (
     run_tests,
     translate_repo,
 )
+from repo_translator.providers.base import LLMProvider
 
 
 def _provider(code: str = "x = 1") -> MockProvider:
@@ -528,6 +529,194 @@ class TestTranslateRepoTestFileSplit:
                         translate_manifests=False, verbose=False, score_confidence=False)
 
         assert "TEST file" not in provider.last_prompt
+
+
+class TestRunTestsWithRetry:
+    """
+    Unlike source files (auto-fixed via _try_run inside the main loop),
+    the translated test suite used to run() exactly once regardless of the
+    result. This mirrors that same retry-on-failure pattern for the suite.
+    """
+
+    def test_retries_and_succeeds_on_second_attempt(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "2 passed")]) as mock_run:
+            report = translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        assert mock_run.call_count == 2
+        assert report.tests_passed is True
+        assert report.test_output == "2 passed"
+
+    def test_gives_up_after_max_fix_attempts(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "still failing")) as mock_run:
+            report = translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        assert mock_run.call_count == 3  # default MAX_FIX_ATTEMPTS
+        assert report.tests_passed is False
+        assert report.test_output == "still failing"
+
+    def test_offline_style_provider_never_retries(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+        provider.max_fix_attempts = 1
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "failed")) as mock_run:
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        mock_run.assert_called_once()
+
+    def test_no_retry_when_there_are_no_test_files(self, tmp_path):
+        # rust's cargo test runs against test_files=[] (test_patterns == []
+        # for the target language) — nothing to re-translate, so one attempt.
+        (tmp_path / "main.py").write_text("print('hi')")
+        out = tmp_path / "out"
+        provider = MockProvider("fn main() {}")
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "failed")) as mock_run:
+            translate_repo(
+                tmp_path, out, "python", "rust", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        mock_run.assert_called_once()
+
+    def test_retry_re_translates_test_files_with_failure_as_context(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "AssertionError: boom"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        # One prompt per source file on the first pass, plus one more per
+        # test file on the retry — the retry prompt must carry the failure.
+        # ts_repo_with_tests has two test files (math.test.ts, util.spec.ts).
+        retry_prompts = [p for p in provider.calls if "AssertionError: boom" in p]
+        assert len(retry_prompts) == 2
+        assert all("TEST file" in p for p in retry_prompts)
+
+    def test_verbose_prints_retry_message(self, ts_repo_with_tests, tmp_path, capsys):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=True, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        out_text = capsys.readouterr().out
+        assert "re-translating" in out_text
+        assert "attempt 2/3" in out_text
+
+    def test_emits_tests_retry_progress_event(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+        events: list[dict] = []
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True, on_progress=events.append,
+            )
+
+        retry_events = [e for e in events if e["type"] == "tests_retry"]
+        assert retry_events == [{"type": "tests_retry", "attempt": 2, "total": 3}]
+
+    def test_re_translation_failure_leaves_previous_file_in_place(self, ts_repo_with_tests, tmp_path):
+        # Initial-pass calls (no error_context / fix note) succeed; any retry
+        # call (recognizable by the fix note _translate_once adds) raises.
+        class _FlakyOnRetryProvider(LLMProvider):
+            max_fix_attempts = 3
+
+            def complete(self, prompt: str, max_tokens: int = 8096) -> str:
+                if "previous translation produced this runtime error" in prompt:
+                    raise Exception("quota exceeded")
+                return "x = 1"
+
+        out = tmp_path / "out"
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "still failing")):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=_FlakyOnRetryProvider(),
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        # Both test files' dest should still hold the original translation,
+        # not be deleted or left corrupt by the failed re-translation attempts.
+        for name in ("math.test.py", "util.spec.py"):
+            dest = out / name
+            assert dest.exists()
+            assert dest.read_text() == "x = 1"
+
+    def test_verbose_prints_re_translation_failure(self, ts_repo_with_tests, tmp_path, capsys):
+        class _FlakyOnRetryProvider(LLMProvider):
+            max_fix_attempts = 3
+
+            def complete(self, prompt: str, max_tokens: int = 8096) -> str:
+                if "previous translation produced this runtime error" in prompt:
+                    raise Exception("quota exceeded")
+                return "x = 1"
+
+        out = tmp_path / "out"
+
+        with patch("repo_translator.agent.run_tests", return_value=(False, "still failing")):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=_FlakyOnRetryProvider(),
+                translate_manifests=False, verbose=True, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        assert "Failed to re-translate" in capsys.readouterr().out
+
+    def test_empty_test_file_is_skipped_on_retry(self, ts_repo_with_tests, tmp_path):
+        (ts_repo_with_tests / "util.spec.ts").write_text("   \n  ")
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        # Empty source files were already written as empty and skipped in the
+        # main loop; the retry pass must not choke re-processing them either.
+        assert (out / "util.spec.py").read_text() == ""
 
 
 class TestPriceLabel:
