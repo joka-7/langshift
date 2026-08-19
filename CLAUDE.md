@@ -140,17 +140,27 @@ still need no API key or network access.
    yet. Their `test_runner` is `None`. Fix: add compile + run steps. (Rust's runner works;
    see the `--run-tests` gating note above.)
 
-3. **`--run-tests` runs the test suite but doesn't retry on failure** — unlike source files which get fix attempts, the test suite just runs once and reports. Fix: implement the same retry loop for tests.
+3. ~~**`--run-tests` runs the test suite but doesn't retry on failure**~~ — **done.** On a failed
+   test run, `_run_tests_with_retry()` (`agent.py`) re-translates the failing test files with the
+   runner output as `error_context` and re-runs, bounded by `provider.max_fix_attempts`. Emits a
+   `tests_retry` progress event per attempt.
 
-4. **No `requirements.txt` → `package.json` validation** — manifest translation is LLM-only
-   with no verification that the output is valid JSON / TOML / etc. Fix: add schema validation
-   per target format.
+4. ~~**No `requirements.txt` → `package.json` validation**~~ — **done.** `manifest.py`'s
+   `_validate_manifest()` checks `package.json`/`composer.json` (`json.loads`), `Cargo.toml`
+   (`tomllib.loads`, guarded for Python 3.10 where `tomllib` doesn't exist), `requirements.txt`
+   (line-shape regex), and `go.mod` (`module` directive). On failure it retries once with the
+   parse error fed back as `error_context`, then reports `validation_failed`.
 
 5. **Large files** — files over ~4000 lines may hit the context window. Fix: add chunking logic, translate function-by-function for large files.
 
 6. **Monorepos with mixed languages** — `collect_files()` only handles one source language. Fix: detect language per directory.
 
-7. **Progress persistence** — if a run is interrupted mid-way, it starts from scratch. Fix: add a `.translation_state.json` checkpoint file.
+7. ~~**Progress persistence**~~ — **done.** `translate_repo()` writes `.translation_state.json`
+   into the output directory after every file (`_save_checkpoint()`); on the next run, if its
+   `input_path`/`from_lang`/`to_lang` match and the previously-recorded output file still exists,
+   the file is skipped and the checkpointed result reused. Controlled by `--resume` /
+   `--no-resume` on the CLI (default: resume) and a `resume` flag in the web UI (default: off,
+   since the default output path isn't unique per job).
 
 8. **GitHub Actions** — `.github/workflows/translate.yml` exists but is untested end-to-end. It assumes `repo-translate` is installable from the public GitHub URL.
 

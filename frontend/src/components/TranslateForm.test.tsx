@@ -168,6 +168,14 @@ describe('TranslateForm', () => {
     expect(checkbox.checked).toBe(true)
   })
 
+  it('toggles the resume checkbox, defaulting to off', async () => {
+    await renderLoaded()
+    const checkbox = screen.getByLabelText('Resume from checkpoint') as HTMLInputElement
+    expect(checkbox.checked).toBe(false)
+    await userEvent.click(checkbox)
+    expect(checkbox.checked).toBe(true)
+  })
+
   it('renders immediately with empty dropdowns, then populates once languages/providers resolve', async () => {
     let resolveProviders: (v: ProvidersResponse) => void = () => {}
     vi.mocked(api.getLanguages).mockResolvedValueOnce(LANGUAGES)

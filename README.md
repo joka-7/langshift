@@ -112,6 +112,10 @@ repo-translate --input ./my-repo --from ts --to python --no-report
 # Also run the translated test suite
 repo-translate --input ./my-repo --from ts --to python --run-tests
 
+# Resume an interrupted run — skips files already completed last time
+# (reads .translation_state.json from the output dir; on by default, use --no-resume to disable)
+repo-translate --input ./my-repo --from ts --to python --resume
+
 # All flags
 repo-translate \
   --input     ./my-repo   \
@@ -122,9 +126,11 @@ repo-translate \
   --model     sonnet      \
   --base-url  https://... \
   --api-key   sk-ant-...  \
+  --run-tests             \
   --no-manifest           \
   --no-confidence         \
   --no-report             \
+  --no-resume             \
   --quiet
 ```
 

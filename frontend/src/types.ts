@@ -109,4 +109,5 @@ export interface TranslateFormValues {
   run_tests: boolean
   translate_manifests: boolean
   score_confidence: boolean
+  resume: boolean
 }

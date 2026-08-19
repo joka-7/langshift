@@ -10,6 +10,7 @@ import tempfile
 import textwrap
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 
 from repo_translator.manifest import _find_manifests, translate_manifest
@@ -513,6 +514,65 @@ def _summary(report: TranslationReport) -> dict:
     }
 
 
+CHECKPOINT_FILENAME = ".translation_state.json"
+
+
+def _load_checkpoint(
+    output_path: Path, repo_path: Path, from_lang: str, to_lang: str,
+) -> dict[str, dict]:
+    """
+    Returns {rel_path: FileResult-dict} for files already successfully
+    translated in a previous run, if a matching checkpoint exists at
+    output_path/.translation_state.json — matching means the same input
+    repo and language pair, so a checkpoint from a different translation
+    that happened to reuse the same output directory is never applied.
+    Returns {} if there's no usable checkpoint (missing, corrupt, or for a
+    different run).
+    """
+    state_file = output_path / CHECKPOINT_FILENAME
+    if not state_file.exists():
+        return {}
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if (
+        data.get("input_path") != str(repo_path)
+        or data.get("from_lang") != from_lang
+        or data.get("to_lang") != to_lang
+    ):
+        return {}
+    return {
+        f["path"]: f
+        for f in data.get("files", [])
+        if f.get("status") in ("ok", "ok_with_warnings")
+    }
+
+
+def _save_checkpoint(
+    output_path: Path, repo_path: Path, from_lang: str, to_lang: str,
+    report: TranslationReport,
+) -> None:
+    """
+    Persist progress so an interrupted run can resume instead of starting
+    over. Called after every file, so a crash mid-run loses at most the
+    file in flight. Write failures are logged and otherwise ignored —
+    a broken checkpoint should never abort an in-progress translation.
+    """
+    state_file = output_path / CHECKPOINT_FILENAME
+    data = {
+        "input_path": str(repo_path),
+        "from_lang": from_lang,
+        "to_lang": to_lang,
+        "files": [asdict(f) for f in report.files],
+    }
+    try:
+        output_path.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _run_tests_with_retry(
     provider: LLMProvider,
     repo_path: Path,
@@ -581,6 +641,7 @@ def translate_repo(
     translate_manifests: bool = True,
     run_tests_after: bool = False,
     score_confidence: bool = True,
+    resume: bool = True,
     on_progress: Callable[[dict], None] | None = None,
 ) -> TranslationReport:
     """
@@ -593,6 +654,14 @@ def translate_repo(
       {"type": "tests_done", "passed": bool}
       {"type": "finished", "summary": dict}
     Consumers (e.g. the web UI) use this to stream live progress; the CLI doesn't pass it.
+
+    resume: if True (the default) and output_path already holds a checkpoint
+    (.translation_state.json) from a previous run of this exact repo_path/
+    from_lang/to_lang, files already recorded "ok"/"ok_with_warnings" there
+    are skipped rather than re-translated — the checkpoint's dest file is
+    trusted only if it still exists on disk. A checkpoint for a different
+    repo or language pair (e.g. output_path reused for an unrelated run) is
+    never applied. Pass resume=False to always start from scratch.
     """
     def _emit(event: dict) -> None:
         if on_progress:
@@ -633,6 +702,10 @@ def translate_repo(
     if verbose:
         print(f"\n  Found {len(src_files)} source + {len(test_files)} test file(s) → {to_lang}\n")
 
+    checkpoint = _load_checkpoint(output_path, repo_path, from_lang, to_lang) if resume else {}
+    if checkpoint and verbose:
+        print(f"  ↻ Resuming: {len(checkpoint)} file(s) already completed in a previous run\n")
+
     # ── 3. Translate each file ─────────────────────────────────────────────
     for i, src_file in enumerate(files, 1):
         rel     = src_file.relative_to(repo_path)
@@ -646,11 +719,22 @@ def translate_repo(
         _emit({"type": "file_start", "index": i, "total": len(files), "path": str(rel),
                "is_test": is_test})
 
+        checkpointed = checkpoint.get(str(rel))
+        if checkpointed is not None and dest.exists():
+            report.files.append(FileResult(**checkpointed))
+            if verbose:
+                print("→ ✓ (resumed from checkpoint)")
+            _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                   "status": checkpointed["status"], "attempts": checkpointed["attempts"],
+                   "confidence": checkpointed.get("confidence")})
+            continue
+
         source_code = src_file.read_text(encoding="utf-8", errors="replace")
 
         if not source_code.strip():
             dest.write_text("", encoding="utf-8")
             report.files.append(FileResult(path=str(rel), status="skipped"))
+            _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
             if verbose:
                 print("→ (empty, skipped)")
             _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
@@ -677,6 +761,7 @@ def translate_repo(
                     path=str(rel), status="failed",
                     attempts=attempt, error=str(e),
                 ))
+                _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
                        "status": "failed", "attempts": attempt, "confidence": None})
                 break
@@ -701,6 +786,7 @@ def translate_repo(
                     attempts=attempt, run_output=run_output,
                     confidence=confidence, confidence_reason=confidence_reason,
                 ))
+                _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 if verbose:
                     extra = f" (fixed in {attempt} attempt(s))" if attempt > 1 else ""
                     conf  = f"  confidence {confidence}/100" if confidence is not None else ""
@@ -732,6 +818,7 @@ def translate_repo(
                     attempts=attempts, error=error_ctx,
                     confidence=confidence, confidence_reason=confidence_reason,
                 ))
+                _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 if verbose:
                     print(f"→ ✓ (saved with warnings after {fix_attempts} attempts)")
                 _emit({

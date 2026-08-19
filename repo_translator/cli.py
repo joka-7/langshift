@@ -72,6 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Skip confidence scoring (saves extra API calls)")
     parser.add_argument("--no-report", action="store_true",
                         help="Skip saving the summary report")
+    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True,
+                        help="Resume an interrupted run using the output directory's checkpoint "
+                             "(.translation_state.json), skipping already-completed files. "
+                             "Use --no-resume to always start from scratch. (default: --resume)")
     parser.add_argument("--quiet",    "-q", action="store_true",
                         help="Suppress progress output")
     return parser
@@ -173,6 +177,7 @@ def main() -> None:
         translate_manifests=not args.no_manifest,
         run_tests_after=args.run_tests,
         score_confidence=not args.no_confidence,
+        resume=args.resume,
     )
 
     report.print_summary()

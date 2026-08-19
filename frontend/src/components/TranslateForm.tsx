@@ -14,6 +14,7 @@ const DEFAULT_VALUES: TranslateFormValues = {
   run_tests: false,
   translate_manifests: true,
   score_confidence: true,
+  resume: false,
 }
 
 interface Props {
@@ -199,6 +200,14 @@ export function TranslateForm({ onEstimate, onTranslate, busy }: Props) {
             onChange={(e) => set('run_tests', e.target.checked)}
           />
           Run tests after
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={values.resume}
+            onChange={(e) => set('resume', e.target.checked)}
+          />
+          Resume from checkpoint
         </label>
       </div>
 

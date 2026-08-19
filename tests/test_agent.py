@@ -452,6 +452,199 @@ class TestTranslateRepo:
         mock_run.assert_called_once()
 
 
+class TestCheckpointResume:
+    """
+    Closes TODO #7: an interrupted run used to start from scratch. Now
+    translate_repo() writes .translation_state.json into the output dir
+    after every file, and (resume=True, the default) skips files already
+    recorded ok/ok_with_warnings there on the next run against the same
+    repo_path/from_lang/to_lang.
+    """
+
+    def test_checkpoint_file_written_after_run(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        (tmp_path / "b.ts").write_text("const b = 2;")
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        state_file = out / ".translation_state.json"
+        assert state_file.exists()
+        data = json.loads(state_file.read_text())
+        assert data["input_path"] == str(tmp_path)
+        assert data["from_lang"] == "typescript"
+        assert data["to_lang"] == "python"
+        assert {f["path"] for f in data["files"]} == {"a.ts", "b.ts"}
+
+    def test_resume_skips_already_completed_files(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        # A second run with a provider that fails every call: if resume didn't
+        # skip the already-completed file, this run would report it failed.
+        report = translate_repo(
+            tmp_path, out, "ts", "python",
+            provider=MockProvider(raises=Exception("should not be called")),
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert report.total == 1
+        assert report.files[0].status == "ok"
+        assert report.failed == 0
+
+    def test_resume_false_always_retranslates(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider("y = 2")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False,
+                        resume=False)
+
+        assert len(provider.calls) == 1  # was actually called, not skipped
+        assert (out / "a.py").read_text() == "y = 2"
+
+    def test_resume_ignores_checkpoint_for_a_different_input_repo(self, tmp_path):
+        repo_a = tmp_path / "repo_a"
+        repo_a.mkdir()
+        (repo_a / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(repo_a, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        repo_b = tmp_path / "repo_b"
+        repo_b.mkdir()
+        (repo_b / "a.ts").write_text("const a = 1;")
+        provider = MockProvider("y = 2")
+        report = translate_repo(repo_b, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # not skipped — different repo_path
+        assert report.files[0].status == "ok"
+
+    def test_resume_ignores_checkpoint_for_a_different_language_pair(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider("fn main() {}")
+        translate_repo(tmp_path, out, "ts", "rust", provider=provider,
+                       translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # not skipped — different to_lang
+
+    def test_resume_ignores_checkpoint_entry_if_dest_file_missing(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        (out / "a.py").unlink()  # simulate the output being deleted separately
+
+        provider = MockProvider("y = 2")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # re-translated, not trusted from the checkpoint
+        assert (out / "a.py").read_text() == "y = 2"
+
+    def test_corrupted_checkpoint_is_ignored_not_fatal(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        out.mkdir(parents=True)
+        (out / ".translation_state.json").write_text("not valid json {{{")
+
+        provider = MockProvider("x = 1")
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert report.files[0].status == "ok"
+        assert len(provider.calls) == 1
+
+    def test_failed_files_are_not_treated_as_resumable(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python",
+                        provider=MockProvider(raises=Exception("quota exceeded")),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider("x = 1")
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # re-attempted, not skipped as "done"
+        assert report.files[0].status == "ok"
+
+    def test_verbose_prints_resume_summary_and_per_file_message(self, tmp_path, capsys):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider(raises=Exception("should not be called"))
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=True, score_confidence=False)
+
+        out_text = capsys.readouterr().out
+        assert "Resuming: 1 file(s) already completed" in out_text
+        assert "resumed from checkpoint" in out_text
+
+    def test_emits_file_done_event_for_resumed_file(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        events: list[dict] = []
+        provider = MockProvider(raises=Exception("should not be called"))
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False,
+                        on_progress=events.append)
+
+        done_events = [e for e in events if e["type"] == "file_done"]
+        assert done_events == [{
+            "type": "file_done", "index": 1, "total": 1, "path": "a.ts",
+            "status": "ok", "attempts": 1, "confidence": None,
+        }]
+
+    def test_partial_run_resumes_only_the_unfinished_files(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        (tmp_path / "b.ts").write_text("const b = 1;")
+        out = tmp_path / "out"
+
+        # First run: "a" succeeds, "b" fails outright (API error every attempt).
+        provider = MockProvider("x = 1")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False)
+        # Now hand-corrupt the checkpoint to simulate b.ts having failed, since
+        # MockProvider can't easily fail only one of two files by content.
+        state_file = out / ".translation_state.json"
+        data = json.loads(state_file.read_text())
+        data["files"].append({"path": "b.ts", "status": "failed", "attempts": 3,
+                              "error": "boom", "run_output": None,
+                              "confidence": None, "confidence_reason": None})
+        state_file.write_text(json.dumps(data))
+        (out / "b.py").unlink(missing_ok=True)
+
+        provider2 = MockProvider("y = 2")
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider2,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider2.calls) == 1  # only b.ts re-translated
+        assert provider2.calls[0].count("const b = 1;") == 1
+        statuses = {f.path: f.status for f in report.files}
+        assert statuses == {"a.ts": "ok", "b.ts": "ok"}
+
+
 class TestTranslateRepoVerboseOutput:
     """
     All of these paths print(...) only under verbose=True — every other test
