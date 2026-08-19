@@ -16,6 +16,8 @@ function describe(event: ProgressEvent): string {
       return `[${event.index}/${event.total}] ${event.path} → ${event.status} (attempts: ${event.attempts}${
         event.confidence != null ? `, confidence: ${event.confidence}` : ''
       })`
+    case 'tests_retry':
+      return `Tests failed, retrying (attempt ${event.attempt}/${event.total})...`
     case 'tests_done':
       return `Tests: ${event.passed ? 'passed' : 'failed'}`
     case 'finished': {

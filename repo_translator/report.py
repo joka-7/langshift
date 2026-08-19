@@ -21,6 +21,7 @@ class FileResult:
     run_output: str | None = None
     confidence: int | None = None
     confidence_reason: str | None = None
+    chunks: int | None = None  # >1 if the file was too large for one call and got split
 
 
 @dataclass
@@ -188,6 +189,7 @@ class TranslationReport:
             lines += ["## ✅ Translated Files", ""]
             for f in ok_files:
                 suffix = " *(needed retry)*" if f.attempts > 1 else ""
+                suffix += f" *(split into {f.chunks} chunks)*" if f.chunks else ""
                 warn   = " ⚠️" if f.status == "ok_with_warnings" else ""
                 if f.confidence is not None:
                     flag = " ⚠️ needs review" if f.confidence < _CONFIDENCE_THRESHOLD else ""

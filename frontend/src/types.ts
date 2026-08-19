@@ -45,7 +45,8 @@ export interface JobSummary {
 }
 
 export interface ProgressEvent {
-  type: 'manifest_done' | 'file_start' | 'file_done' | 'tests_done' | 'finished' | 'error'
+  type: 'manifest_done' | 'file_start' | 'file_done' | 'tests_retry' | 'tests_done'
+    | 'finished' | 'error'
   [key: string]: unknown
 }
 
@@ -57,6 +58,7 @@ export interface FileResult {
   run_output?: string | null
   confidence?: number | null
   confidence_reason?: string | null
+  chunks?: number | null
 }
 
 export interface ReportSummary {
@@ -109,4 +111,6 @@ export interface TranslateFormValues {
   run_tests: boolean
   translate_manifests: boolean
   score_confidence: boolean
+  resume: boolean
+  cross_file_context: boolean
 }

@@ -32,6 +32,8 @@ const BASE_VALUES: TranslateFormValues = {
   run_tests: false,
   translate_manifests: true,
   score_confidence: true,
+  resume: false,
+  cross_file_context: false,
 }
 
 describe('api', () => {
@@ -86,11 +88,14 @@ describe('api', () => {
     })
   })
 
-  it('postJob POSTs to /api/jobs including output_path/api_key/run_tests', async () => {
+  it('postJob POSTs to /api/jobs including output_path/api_key/run_tests/resume/cross_file_context', async () => {
     const mockFetch = vi.mocked(fetch)
     mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'job1' }))
 
-    await postJob({ ...BASE_VALUES, output_path: '/out', api_key: 'sk-1', run_tests: true })
+    await postJob({
+      ...BASE_VALUES, output_path: '/out', api_key: 'sk-1', run_tests: true, resume: true,
+      cross_file_context: true,
+    })
 
     const [path, init] = mockFetch.mock.calls[0]
     expect(path).toBe('/api/jobs')
@@ -98,6 +103,8 @@ describe('api', () => {
     expect(body.output_path).toBe('/out')
     expect(body.api_key).toBe('sk-1')
     expect(body.run_tests).toBe(true)
+    expect(body.resume).toBe(true)
+    expect(body.cross_file_context).toBe(true)
   })
 
   it('postJob omits empty optional fields rather than sending empty strings', async () => {

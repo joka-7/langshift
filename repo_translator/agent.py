@@ -5,11 +5,13 @@ Core translation agent — reads files, translates via LLM provider, runs & fixe
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 import textwrap
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 
 from repo_translator.manifest import _find_manifests, translate_manifest
@@ -194,6 +196,116 @@ MAX_FIX_ATTEMPTS = 3
 _CHARS_PER_TOKEN      = 4
 _PROMPT_OVERHEAD_TOKS = 200
 
+# Files larger than this get split into several translation calls (see
+# _split_into_chunks) instead of one — both to stay well under the
+# max_tokens=8096 output cap in _translate_chunk (a same-sized-or-larger
+# translated file could otherwise get truncated) and to avoid overrunning
+# smaller providers' context windows. Kept as a module constant, not a
+# hardcoded literal, so tests can lower it instead of generating a
+# multi-thousand-line fixture to exercise chunking.
+CHUNK_THRESHOLD_CHARS = 12000
+
+# ---------------------------------------------------------------------------
+# Cross-file context (--cross-file-context, off by default)
+# ---------------------------------------------------------------------------
+# Each file is still translated independently — there's no shared
+# translation state — but when enabled, every prompt gets a short read-only
+# "repo map" listing the *other* source files and their top-level symbols,
+# so the model can keep cross-file imports/calls consistent instead of
+# guessing at names it's never seen.
+#
+# Regex-based, not a real parser: good enough to hint an LLM, not a
+# guarantee of completeness or precision. Unmapped languages (cpp, c —
+# their header/impl split and lack of an `export` keyword make a single
+# regex unreliable) fall back to listing filenames only, no symbols.
+_SYMBOL_PATTERNS: dict[str, re.Pattern[str]] = {
+    "typescript": re.compile(
+        r"^export\s+(?:default\s+)?(?:async\s+)?"
+        r"(?:function|class|const|let|var|interface|type|enum)\s+(\w+)",
+        re.MULTILINE,
+    ),
+    "javascript": re.compile(
+        r"^export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var)\s+(\w+)",
+        re.MULTILINE,
+    ),
+    "python": re.compile(r"^(?:def|class)\s+(\w+)", re.MULTILINE),
+    "go": re.compile(r"^(?:func\s+(?:\([^)]*\)\s+)?|type\s+)(\w+)", re.MULTILINE),
+    # Rust has an explicit visibility keyword, unlike the other languages
+    # here — so unlike them, `pub` is required, not optional: an item
+    # without it is invisible outside its module and listing it as
+    # "exported" would be actively misleading for cross-file references.
+    "rust": re.compile(r"^pub\s+(?:fn|struct|enum|trait)\s+(\w+)", re.MULTILINE),
+    "ruby": re.compile(r"^(?:def|class|module)\s+(\w+)", re.MULTILINE),
+    "csharp": re.compile(
+        r"^\s*public\s+(?:static\s+|abstract\s+|sealed\s+)*(?:class|interface|enum|struct)\s+(\w+)",
+        re.MULTILINE,
+    ),
+    "php": re.compile(r"^(?:function|class|interface|trait)\s+(\w+)", re.MULTILINE),
+    "kotlin": re.compile(r"^(?:public\s+)?(?:fun|class|interface|object)\s+(\w+)", re.MULTILINE),
+    "swift": re.compile(
+        r"^(?:public\s+|open\s+)?(?:func|class|struct|enum|protocol)\s+(\w+)", re.MULTILINE,
+    ),
+    "java": re.compile(
+        r"^\s*public\s+(?:static\s+|abstract\s+|final\s+)*(?:class|interface|enum)\s+(\w+)",
+        re.MULTILINE,
+    ),
+}
+_MAX_SYMBOLS_PER_FILE  = 20
+_REPO_MAP_MAX_CHARS    = 4000  # caps the repo map's contribution to prompt size
+
+
+def _extract_symbols(source_code: str, lang: str) -> list[str]:
+    """Best-effort top-level symbol names for lang. See _SYMBOL_PATTERNS."""
+    pattern = _SYMBOL_PATTERNS.get(lang)
+    if pattern is None:
+        return []
+    names: list[str] = []
+    for m in pattern.finditer(source_code):
+        name = m.group(1)
+        if name not in names:
+            names.append(name)
+        if len(names) >= _MAX_SYMBOLS_PER_FILE:
+            break
+    return names
+
+
+def _build_repo_map(files: list[Path], repo_path: Path, from_lang: str) -> dict[str, list[str]]:
+    """{relative_path: [top-level symbol names]} for every collected source file."""
+    repo_map: dict[str, list[str]] = {}
+    for f in files:
+        try:
+            source = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        repo_map[str(f.relative_to(repo_path))] = _extract_symbols(source, from_lang)
+    return repo_map
+
+
+def _format_repo_map(
+    repo_map: dict[str, list[str]], exclude: str, threshold: int = _REPO_MAP_MAX_CHARS,
+) -> str:
+    """
+    Render repo_map as a prompt-ready listing, excluding the file currently
+    being translated (it doesn't need a map entry for itself). Stops adding
+    entries once `threshold` chars are reached and notes how many were left
+    out, rather than growing the prompt unbounded for large repos.
+    """
+    lines: list[str] = []
+    total = 0
+    omitted = 0
+    for path, symbols in repo_map.items():
+        if path == exclude:
+            continue
+        entry = f"- {path}" + (f": {', '.join(symbols)}" if symbols else "")
+        if total + len(entry) > threshold:
+            omitted += 1
+            continue
+        lines.append(entry)
+        total += len(entry)
+    if omitted:
+        lines.append(f"... ({omitted} more file(s) omitted)")
+    return "\n".join(lines)
+
 # (provider, model_name) → (input $/MTok, output $/MTok)
 # Groq has a free tier (rate-limited); prices below are for paid/on-demand usage.
 # openai-compat pricing is unknown (varies by service) — will show None in estimate.
@@ -239,13 +351,55 @@ def price_label(provider: str, model: str, base_url: str | None = None) -> str:
 # Translation helpers
 # ---------------------------------------------------------------------------
 
-def _translate_once(
+def _split_into_chunks(
+    source_code: str, threshold: int = CHUNK_THRESHOLD_CHARS,
+) -> list[str]:
+    """
+    Split source_code into chunks at blank-line boundaries — a language-
+    agnostic stand-in for "top-level boundary" that keeps a chunk from
+    cutting a function/class body in half — greedily packing consecutive
+    blocks up to `threshold` chars each. A single block that alone exceeds
+    the threshold is kept whole rather than split further (an oversized
+    chunk is recoverable; a syntactically broken one usually isn't).
+
+    Returns [source_code] unchanged when it's already at or under the
+    threshold, which is the common case and keeps single-call callers
+    (the vast majority of files) on the original one-prompt-per-file path.
+    """
+    if len(source_code) <= threshold:
+        return [source_code]
+
+    # Capture the blank-line separators themselves so concatenating the
+    # blocks back together reproduces the original text exactly.
+    parts = re.split(r"(\n[ \t]*\n)", source_code)
+    blocks = [
+        parts[i] + (parts[i + 1] if i + 1 < len(parts) else "")
+        for i in range(0, len(parts), 2)
+    ]
+
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        if current and len(current) + len(block) > threshold:
+            chunks.append(current)
+            current = block
+        else:
+            current += block
+    if current:
+        chunks.append(current)
+    return chunks or [source_code]
+
+
+def _translate_chunk(
     provider: LLMProvider,
     source_code: str,
     from_lang: str,
     to_lang: str,
     is_test: bool = False,
     error_context: str | None = None,
+    chunk_index: int | None = None,
+    chunk_total: int | None = None,
+    repo_context: str | None = None,
 ) -> str:
     fix_note = ""
     if error_context:
@@ -266,6 +420,28 @@ def _translate_once(
         - Use {framework} idioms (describe/it, def test_, #[test], etc.).
         """
 
+    chunk_note = ""
+    if chunk_total is not None and chunk_total > 1:
+        chunk_note = f"""
+        - This is chunk {chunk_index} of {chunk_total} of ONE larger file, split only because
+          of its size. Translate just this chunk's code, exactly as given, with no added
+          file-level framing (no extra imports, no repeated boilerplate). The chunks'
+          translations will be concatenated in order to form the final file.
+        """
+
+    # A single short line, not a multi-line block: it's interpolated inside
+    # the dedented template below (see the NOTE further down), and unlike
+    # source_code it never contains a fenced code block that reindenting
+    # could break — but it still shouldn't introduce a *different* common
+    # indentation than the rest of the template. The repo map's actual
+    # (multi-line, zero-indent) content is appended after the dedent instead.
+    repo_note = (
+        "\n        - Other files in this repo and their exported top-level symbols are "
+        "listed after the source below — use them only to keep cross-file references "
+        "(imports, calls) consistent; do not translate or restate that list."
+        if repo_context else ""
+    )
+
     # NOTE: source_code is appended *after* dedent. If it were interpolated
     # inside the dedented block, its un-indented lines would defeat
     # textwrap.dedent's common-prefix calculation and leak the template's
@@ -280,12 +456,47 @@ def _translate_once(
         - Use idiomatic {to_lang} patterns and standard library where possible.
         - Replace language-specific imports/packages with {to_lang} equivalents.
         - If a direct equivalent doesn't exist, write a clear TODO comment.
-        {test_note}{fix_note}
+        {test_note}{fix_note}{chunk_note}{repo_note}
     """).strip()
 
     prompt = f"{instructions}\n\nSource ({from_lang}):\n```\n{source_code}\n```"
+    if repo_context:
+        prompt += f"\n\nOther files in this repo:\n{repo_context}"
 
     return complete_with_backoff(provider, prompt, max_tokens=8096)
+
+
+def _translate_once(
+    provider: LLMProvider,
+    source_code: str,
+    from_lang: str,
+    to_lang: str,
+    is_test: bool = False,
+    error_context: str | None = None,
+    repo_context: str | None = None,
+) -> str:
+    """
+    Translate one file's source. Transparent to callers: this always
+    returns one translated string per call, whether it took one provider
+    call or — for a file over CHUNK_THRESHOLD_CHARS — several, chunked by
+    _split_into_chunks and concatenated in order. repo_context, if given
+    (see _format_repo_map), is a read-only "here's the rest of the repo"
+    note included in every chunk's prompt — it isn't shared translation
+    state, just extra context for that one call.
+    """
+    chunks = _split_into_chunks(source_code, threshold=CHUNK_THRESHOLD_CHARS)
+    if len(chunks) == 1:
+        return _translate_chunk(
+            provider, source_code, from_lang, to_lang, is_test, error_context,
+            repo_context=repo_context,
+        )
+    return "".join(
+        _translate_chunk(
+            provider, chunk, from_lang, to_lang, is_test, error_context,
+            chunk_index=idx, chunk_total=len(chunks), repo_context=repo_context,
+        )
+        for idx, chunk in enumerate(chunks, 1)
+    )
 
 
 def _score_confidence(
@@ -513,6 +724,126 @@ def _summary(report: TranslationReport) -> dict:
     }
 
 
+CHECKPOINT_FILENAME = ".translation_state.json"
+
+
+def _load_checkpoint(
+    output_path: Path, repo_path: Path, from_lang: str, to_lang: str,
+) -> dict[str, dict]:
+    """
+    Returns {rel_path: FileResult-dict} for files already successfully
+    translated in a previous run, if a matching checkpoint exists at
+    output_path/.translation_state.json — matching means the same input
+    repo and language pair, so a checkpoint from a different translation
+    that happened to reuse the same output directory is never applied.
+    Returns {} if there's no usable checkpoint (missing, corrupt, or for a
+    different run).
+    """
+    state_file = output_path / CHECKPOINT_FILENAME
+    if not state_file.exists():
+        return {}
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if (
+        data.get("input_path") != str(repo_path)
+        or data.get("from_lang") != from_lang
+        or data.get("to_lang") != to_lang
+    ):
+        return {}
+    return {
+        f["path"]: f
+        for f in data.get("files", [])
+        if f.get("status") in ("ok", "ok_with_warnings")
+    }
+
+
+def _save_checkpoint(
+    output_path: Path, repo_path: Path, from_lang: str, to_lang: str,
+    report: TranslationReport,
+) -> None:
+    """
+    Persist progress so an interrupted run can resume instead of starting
+    over. Called after every file, so a crash mid-run loses at most the
+    file in flight. Write failures are logged and otherwise ignored —
+    a broken checkpoint should never abort an in-progress translation.
+    """
+    state_file = output_path / CHECKPOINT_FILENAME
+    data = {
+        "input_path": str(repo_path),
+        "from_lang": from_lang,
+        "to_lang": to_lang,
+        "files": [asdict(f) for f in report.files],
+    }
+    try:
+        output_path.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _run_tests_with_retry(
+    provider: LLMProvider,
+    repo_path: Path,
+    output_path: Path,
+    from_lang: str,
+    to_lang: str,
+    test_files: list[Path],
+    verbose: bool,
+    on_progress: Callable[[dict], None] | None,
+    repo_map: dict[str, list[str]] | None = None,
+) -> tuple[bool, str]:
+    """
+    Run the translated test suite, retrying like the source-file auto-fix
+    loop does: on failure, re-translate every test file with the runner's
+    output as error_context and run again, up to the provider's
+    max_fix_attempts (the offline provider's max_fix_attempts=1 means no
+    retries, same as for source files).
+
+    Unlike the source-file loop, there's no reliable way to tell which
+    individual test file caused a failure from arbitrary test-runner output
+    across 13 languages' test frameworks — so a retry re-translates every
+    test file, not just the failing one(s).
+    """
+    def _emit(event: dict) -> None:
+        if on_progress:
+            on_progress(event)
+
+    max_attempts = getattr(provider, "max_fix_attempts", MAX_FIX_ATTEMPTS)
+    passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
+
+    attempt = 1
+    while not passed and attempt < max_attempts and test_files:
+        attempt += 1
+        if verbose:
+            print(f"\n  🔁 Test suite failed, re-translating {len(test_files)} "
+                  f"test file(s) (attempt {attempt}/{max_attempts})...")
+        _emit({"type": "tests_retry", "attempt": attempt, "total": max_attempts})
+
+        for src_file in test_files:
+            source_code = src_file.read_text(encoding="utf-8", errors="replace")
+            if not source_code.strip():
+                continue
+            rel = str(src_file.relative_to(repo_path))
+            repo_context = _format_repo_map(repo_map, exclude=rel) if repo_map else None
+            try:
+                translated_code = _translate_once(
+                    provider, source_code, from_lang, to_lang,
+                    is_test=True, error_context=test_output, repo_context=repo_context,
+                )
+            except Exception as e:
+                if verbose:
+                    print(f"    ✗ Failed to re-translate {src_file.name}: {e}")
+                continue  # leave the previous translation of this file in place
+            dest = _output_path(src_file, repo_path, output_path, to_lang)
+            dest.write_text(translated_code, encoding="utf-8")
+
+        passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
+
+    return passed, test_output
+
+
 def translate_repo(
     repo_path: Path,
     output_path: Path,
@@ -523,6 +854,8 @@ def translate_repo(
     translate_manifests: bool = True,
     run_tests_after: bool = False,
     score_confidence: bool = True,
+    resume: bool = True,
+    cross_file_context: bool = False,
     on_progress: Callable[[dict], None] | None = None,
 ) -> TranslationReport:
     """
@@ -531,9 +864,26 @@ def translate_repo(
       {"type": "file_start", "index": int, "total": int, "path": str, "is_test": bool}
       {"type": "file_done", "index": int, "total": int, "path": str, "status": str,
        "attempts": int, "confidence": int | None}
+      {"type": "tests_retry", "attempt": int, "total": int}
       {"type": "tests_done", "passed": bool}
       {"type": "finished", "summary": dict}
     Consumers (e.g. the web UI) use this to stream live progress; the CLI doesn't pass it.
+
+    resume: if True (the default) and output_path already holds a checkpoint
+    (.translation_state.json) from a previous run of this exact repo_path/
+    from_lang/to_lang, files already recorded "ok"/"ok_with_warnings" there
+    are skipped rather than re-translated — the checkpoint's dest file is
+    trusted only if it still exists on disk. A checkpoint for a different
+    repo or language pair (e.g. output_path reused for an unrelated run) is
+    never applied. Pass resume=False to always start from scratch.
+
+    cross_file_context: off by default, to keep existing prompt shapes and
+    cost estimates unchanged unless opted in. When True, every file's
+    prompt gets a read-only "repo map" listing the *other* source files and
+    their top-level symbols (see _build_repo_map/_format_repo_map), to help
+    the model keep cross-file imports/calls consistent. Each file is still
+    translated independently — there's no translation state shared between
+    files, just this one extra note per prompt.
     """
     def _emit(event: dict) -> None:
         if on_progress:
@@ -574,6 +924,12 @@ def translate_repo(
     if verbose:
         print(f"\n  Found {len(src_files)} source + {len(test_files)} test file(s) → {to_lang}\n")
 
+    repo_map = _build_repo_map(files, repo_path, from_lang) if cross_file_context else {}
+
+    checkpoint = _load_checkpoint(output_path, repo_path, from_lang, to_lang) if resume else {}
+    if checkpoint and verbose:
+        print(f"  ↻ Resuming: {len(checkpoint)} file(s) already completed in a previous run\n")
+
     # ── 3. Translate each file ─────────────────────────────────────────────
     for i, src_file in enumerate(files, 1):
         rel     = src_file.relative_to(repo_path)
@@ -587,16 +943,33 @@ def translate_repo(
         _emit({"type": "file_start", "index": i, "total": len(files), "path": str(rel),
                "is_test": is_test})
 
+        checkpointed = checkpoint.get(str(rel))
+        if checkpointed is not None and dest.exists():
+            report.files.append(FileResult(**checkpointed))
+            if verbose:
+                print("→ ✓ (resumed from checkpoint)")
+            _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                   "status": checkpointed["status"], "attempts": checkpointed["attempts"],
+                   "confidence": checkpointed.get("confidence")})
+            continue
+
         source_code = src_file.read_text(encoding="utf-8", errors="replace")
 
         if not source_code.strip():
             dest.write_text("", encoding="utf-8")
             report.files.append(FileResult(path=str(rel), status="skipped"))
+            _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
             if verbose:
                 print("→ (empty, skipped)")
             _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
                    "status": "skipped", "attempts": 0, "confidence": None})
             continue
+
+        chunk_count = len(_split_into_chunks(source_code, threshold=CHUNK_THRESHOLD_CHARS))
+        if chunk_count > 1 and verbose:
+            print(f"(split into {chunk_count} chunks)", end=" ", flush=True)
+
+        repo_context = _format_repo_map(repo_map, exclude=str(rel)) if cross_file_context else None
 
         error_ctx  = None
         final_code = ""
@@ -609,7 +982,7 @@ def translate_repo(
             try:
                 translated_code = _translate_once(
                     provider, source_code, from_lang, to_lang,
-                    is_test=is_test, error_context=error_ctx,
+                    is_test=is_test, error_context=error_ctx, repo_context=repo_context,
                 )
             except Exception as e:
                 if verbose:
@@ -617,7 +990,9 @@ def translate_repo(
                 report.files.append(FileResult(
                     path=str(rel), status="failed",
                     attempts=attempt, error=str(e),
+                    chunks=chunk_count if chunk_count > 1 else None,
                 ))
+                _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
                        "status": "failed", "attempts": attempt, "confidence": None})
                 break
@@ -641,7 +1016,9 @@ def translate_repo(
                     path=str(rel), status=status,
                     attempts=attempt, run_output=run_output,
                     confidence=confidence, confidence_reason=confidence_reason,
+                    chunks=chunk_count if chunk_count > 1 else None,
                 ))
+                _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 if verbose:
                     extra = f" (fixed in {attempt} attempt(s))" if attempt > 1 else ""
                     conf  = f"  confidence {confidence}/100" if confidence is not None else ""
@@ -672,7 +1049,9 @@ def translate_repo(
                     path=str(rel), status="ok_with_warnings",
                     attempts=attempts, error=error_ctx,
                     confidence=confidence, confidence_reason=confidence_reason,
+                    chunks=chunk_count if chunk_count > 1 else None,
                 ))
+                _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 if verbose:
                     print(f"→ ✓ (saved with warnings after {fix_attempts} attempts)")
                 _emit({
@@ -688,7 +1067,10 @@ def translate_repo(
     # to report test_files, so it must not be gated on that list being non-empty.
     to_test_patterns = LANGUAGE_META[to_lang].get("test_patterns", [])
     if run_tests_after and (test_files or not to_test_patterns):
-        passed, test_output = run_tests(output_path, to_lang, verbose=verbose)
+        passed, test_output = _run_tests_with_retry(
+            provider, repo_path, output_path, from_lang, to_lang,
+            test_files, verbose, on_progress, repo_map=repo_map,
+        )
         report.tests_passed = passed
         report.test_output  = test_output
         _emit({"type": "tests_done", "passed": passed})

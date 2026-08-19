@@ -107,7 +107,10 @@ pyproject.toml — package config, entry points: repo-translate = repo_translato
   `_find_manifests()` returns them in a deterministic order (by pattern, then alphabetically);
   when multiple source manifests would map to the same output filename, later ones are saved
   with a disambiguating suffix instead of overwriting the first.
-- **No state between files** — each file is translated independently; there's no cross-file context passed to Claude yet (see TODO below)
+- **No state between files** — each file is translated independently. Optionally
+  (`--cross-file-context`, off by default), every prompt gets a read-only "repo map" of the
+  other files' top-level symbols — see TODO #1 below — but there's still no state carried
+  *between* file translations, just that one extra note per prompt.
 
 ### Supported languages (13 total)
 typescript, javascript, python, java, go, rust, ruby, csharp, php, kotlin, swift, cpp, c
@@ -134,23 +137,47 @@ still need no API key or network access.
 
 ## Known limitations / TODOs (good next tasks)
 
-1. **No cross-file context** — each file is translated in isolation. Claude doesn't know what other files exist or how they import each other. For large repos with complex interdependencies, this causes broken imports in the output. Fix: build a dependency graph first, pass relevant context per file.
+1. ~~**No cross-file context**~~ — **done, opt-in.** `--cross-file-context` (off by default, so
+   existing prompt shapes/cost estimates are unchanged unless requested) has `translate_repo()`
+   build a lightweight "repo map" — `_build_repo_map()` regex-extracts each source file's
+   top-level symbol names (`_extract_symbols()`, one pattern per language in
+   `_SYMBOL_PATTERNS`; unmapped languages just list filenames) — and appends a per-file,
+   self-excluded slice of it (`_format_repo_map()`, capped at `_REPO_MAP_MAX_CHARS`) after the
+   source block in every translation prompt. Still no state shared *between* file translations —
+   each prompt just gets this one extra read-only note. It's a regex heuristic, not a real
+   parser, so treat it as a hint, not a guarantee.
 
 2. **Test runner for compiled languages** — Java, Kotlin, C#, C++ don't have auto-run support
    yet. Their `test_runner` is `None`. Fix: add compile + run steps. (Rust's runner works;
    see the `--run-tests` gating note above.)
 
-3. **`--run-tests` runs the test suite but doesn't retry on failure** — unlike source files which get fix attempts, the test suite just runs once and reports. Fix: implement the same retry loop for tests.
+3. ~~**`--run-tests` runs the test suite but doesn't retry on failure**~~ — **done.** On a failed
+   test run, `_run_tests_with_retry()` (`agent.py`) re-translates the failing test files with the
+   runner output as `error_context` and re-runs, bounded by `provider.max_fix_attempts`. Emits a
+   `tests_retry` progress event per attempt.
 
-4. **No `requirements.txt` → `package.json` validation** — manifest translation is LLM-only
-   with no verification that the output is valid JSON / TOML / etc. Fix: add schema validation
-   per target format.
+4. ~~**No `requirements.txt` → `package.json` validation**~~ — **done.** `manifest.py`'s
+   `_validate_manifest()` checks `package.json`/`composer.json` (`json.loads`), `Cargo.toml`
+   (`tomllib.loads`, guarded for Python 3.10 where `tomllib` doesn't exist), `requirements.txt`
+   (line-shape regex), and `go.mod` (`module` directive). On failure it retries once with the
+   parse error fed back as `error_context`, then reports `validation_failed`.
 
-5. **Large files** — files over ~4000 lines may hit the context window. Fix: add chunking logic, translate function-by-function for large files.
+5. ~~**Large files**~~ — **done.** Files over `CHUNK_THRESHOLD_CHARS` (12,000 chars, a module
+   constant in `agent.py`) are split at blank-line boundaries (`_split_into_chunks()`) —
+   greedily packed so no chunk cuts a function/class body in half, with a single oversized
+   block kept whole rather than split further. Each chunk gets its own translation call noting
+   "chunk N of M"; the results are concatenated in order. Transparent to callers — the retry
+   loop and test-suite retry both call `_translate_once()` once per attempt either way.
+   `FileResult.chunks` records the count (`None` when not chunked) and shows up in the report.
 
 6. **Monorepos with mixed languages** — `collect_files()` only handles one source language. Fix: detect language per directory.
 
-7. **Progress persistence** — if a run is interrupted mid-way, it starts from scratch. Fix: add a `.translation_state.json` checkpoint file.
+7. ~~**Progress persistence**~~ — **done.** `translate_repo()` writes `.translation_state.json`
+   into the output directory after every file (`_save_checkpoint()`); on the next run, if its
+   `input_path`/`from_lang`/`to_lang` match and the previously-recorded output file still exists,
+   the file is skipped and the checkpointed result reused. Controlled by `--resume` /
+   `--no-resume` on the CLI (default: resume) and a `resume` flag in the web UI (default: off,
+   since the default output path isn't unique per job).
 
 8. **GitHub Actions** — `.github/workflows/translate.yml` exists but is untested end-to-end. It assumes `repo-translate` is installable from the public GitHub URL.
 

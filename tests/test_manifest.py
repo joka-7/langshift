@@ -12,6 +12,7 @@ from helpers import MockProvider
 from repo_translator.manifest import (
     TARGET_MANIFEST,
     _find_manifests,
+    _validate_manifest,
     translate_manifest,
 )
 
@@ -240,3 +241,140 @@ class TestTranslateManifestVerboseOutput:
 
         out_text = capsys.readouterr().out
         assert "already written from another manifest" in out_text
+
+
+# ─────────────────────────────────────────────
+# _validate_manifest
+# ─────────────────────────────────────────────
+
+class TestValidateManifest:
+    def test_valid_package_json_passes(self):
+        assert _validate_manifest("package.json", '{"dependencies": {"flask": "*"}}') is None
+
+    def test_invalid_package_json_fails(self):
+        error = _validate_manifest("package.json", "{not valid json")
+        assert error is not None
+        assert "JSON" in error
+
+    def test_valid_composer_json_passes(self):
+        assert _validate_manifest("composer.json", '{"require": {}}') is None
+
+    def test_valid_cargo_toml_passes(self):
+        assert _validate_manifest("Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n') is None
+
+    def test_invalid_cargo_toml_fails(self):
+        error = _validate_manifest("Cargo.toml", "[package\nname = x")
+        assert error is not None
+        assert "TOML" in error
+
+    def test_valid_requirements_txt_passes(self):
+        assert _validate_manifest("requirements.txt", "flask>=2.0\nnumpy==1.24.0\n") is None
+
+    def test_requirements_txt_with_comments_and_blanks_passes(self):
+        content = "# a comment\nflask>=2.0\n\nnumpy==1.24.0  # pinned\n"
+        assert _validate_manifest("requirements.txt", content) is None
+
+    def test_requirements_txt_with_pip_flags_passes(self):
+        assert _validate_manifest("requirements.txt", "-e ./local-pkg\nflask>=2.0\n") is None
+
+    def test_invalid_requirements_txt_fails(self):
+        # A leaked markdown fence or prose line, not a requirement.
+        error = _validate_manifest("requirements.txt", "Here are the translated dependencies:\nflask>=2.0\n")
+        assert error is not None
+        assert "flask>=2.0" not in error  # the bad line is the one flagged, not the good one
+
+    def test_valid_go_mod_passes(self):
+        assert _validate_manifest("go.mod", "module example.com/foo\n\ngo 1.21\n") is None
+
+    def test_go_mod_missing_module_directive_fails(self):
+        error = _validate_manifest("go.mod", "go 1.21\nrequire foo v1.0.0\n")
+        assert error is not None
+        assert "module" in error
+
+    def test_empty_content_fails_regardless_of_format(self):
+        assert _validate_manifest("package.json", "") is not None
+        assert _validate_manifest("requirements.txt", "   \n  ") is not None
+
+    def test_unvalidated_format_always_passes(self):
+        # pom.xml, Gemfile, etc. have no validator — anything goes.
+        assert _validate_manifest("pom.xml", "this is not even close to XML") is None
+        assert _validate_manifest("Gemfile", "whatever") is None
+
+    def test_cargo_toml_validation_skipped_without_tomllib(self):
+        # Simulates Python 3.10, where tomllib doesn't exist yet.
+        with patch("repo_translator.manifest.tomllib", None):
+            assert _validate_manifest("Cargo.toml", "not even close to toml {{{") is None
+
+
+# ─────────────────────────────────────────────
+# translate_manifest — validation retry loop
+# ─────────────────────────────────────────────
+
+class TestTranslateManifestValidation:
+    def test_invalid_then_valid_response_is_written_after_retry(self, tmp_path, capsys):
+        (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
+        out = tmp_path / "out"
+        provider = MockProvider("not valid json at all", "flask>=2.0")
+
+        result = translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=True)
+
+        assert len(result["translated"]) == 1
+        assert result["validation_failed"] == []
+        written = Path(result["translated"][0])
+        assert written.read_text() == "flask>=2.0"
+        assert "retrying" in capsys.readouterr().out
+
+    def test_invalid_after_all_attempts_is_skipped_not_written(self, tmp_path, capsys):
+        (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
+        out = tmp_path / "out"
+        provider = MockProvider("still not valid json", "also not valid json")
+
+        result = translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=True)
+
+        assert result["translated"] == []
+        assert len(result["validation_failed"]) == 1
+        assert result["validation_failed"][0]["manifest"] == "package.json"
+        assert not out.exists() or list(out.iterdir()) == []
+        assert "Skipped" in capsys.readouterr().out
+
+    def test_error_context_is_included_in_retry_prompt(self, tmp_path):
+        (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
+        out = tmp_path / "out"
+        provider = MockProvider("Here is the translated file:", "flask>=2.0")
+
+        translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=False)
+
+        assert len(provider.calls) == 2
+        assert "previous attempt produced invalid output" in provider.calls[1]
+        assert "does not look like a pip requirement" in provider.calls[1]
+
+    def test_valid_first_try_only_calls_provider_once(self, tmp_path):
+        (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
+        out = tmp_path / "out"
+        provider = MockProvider("flask>=2.0")
+
+        translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=False)
+
+        assert len(provider.calls) == 1
+
+    def test_no_validator_for_format_never_retries(self, tmp_path):
+        # pom.xml has no validator, so any response is accepted immediately.
+        (tmp_path / "requirements.txt").write_text(SAMPLE_REQUIREMENTS)
+        out = tmp_path / "out"
+        provider = MockProvider("<project>anything goes</project>")
+
+        result = translate_manifest(provider, tmp_path, out, "python", "java", verbose=False)
+
+        assert len(result["translated"]) == 1
+        assert len(provider.calls) == 1
+
+    def test_write_failure_is_logged_not_raised(self, tmp_path, capsys):
+        (tmp_path / "package.json").write_text(SAMPLE_PACKAGE_JSON)
+        out = tmp_path / "out"
+        provider = MockProvider("flask>=2.0")
+
+        with patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
+            result = translate_manifest(provider, tmp_path, out, "typescript", "python", verbose=True)
+
+        assert result["translated"] == []
+        assert "Failed to write output" in capsys.readouterr().out

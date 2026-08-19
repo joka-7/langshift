@@ -14,11 +14,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from helpers import CapturingProvider, MockProvider
 
+import repo_translator.agent as agent
 from repo_translator.agent import (
     LANGUAGE_META,
+    _build_repo_map,
+    _extract_symbols,
+    _format_repo_map,
     _is_test_file,
     _output_path,
     _score_confidence,
+    _split_into_chunks,
     _translate_once,
     _try_run,
     collect_files,
@@ -28,6 +33,7 @@ from repo_translator.agent import (
     run_tests,
     translate_repo,
 )
+from repo_translator.providers.base import LLMProvider
 
 
 def _provider(code: str = "x = 1") -> MockProvider:
@@ -451,6 +457,199 @@ class TestTranslateRepo:
         mock_run.assert_called_once()
 
 
+class TestCheckpointResume:
+    """
+    Closes TODO #7: an interrupted run used to start from scratch. Now
+    translate_repo() writes .translation_state.json into the output dir
+    after every file, and (resume=True, the default) skips files already
+    recorded ok/ok_with_warnings there on the next run against the same
+    repo_path/from_lang/to_lang.
+    """
+
+    def test_checkpoint_file_written_after_run(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        (tmp_path / "b.ts").write_text("const b = 2;")
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        state_file = out / ".translation_state.json"
+        assert state_file.exists()
+        data = json.loads(state_file.read_text())
+        assert data["input_path"] == str(tmp_path)
+        assert data["from_lang"] == "typescript"
+        assert data["to_lang"] == "python"
+        assert {f["path"] for f in data["files"]} == {"a.ts", "b.ts"}
+
+    def test_resume_skips_already_completed_files(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        # A second run with a provider that fails every call: if resume didn't
+        # skip the already-completed file, this run would report it failed.
+        report = translate_repo(
+            tmp_path, out, "ts", "python",
+            provider=MockProvider(raises=Exception("should not be called")),
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert report.total == 1
+        assert report.files[0].status == "ok"
+        assert report.failed == 0
+
+    def test_resume_false_always_retranslates(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider("y = 2")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False,
+                        resume=False)
+
+        assert len(provider.calls) == 1  # was actually called, not skipped
+        assert (out / "a.py").read_text() == "y = 2"
+
+    def test_resume_ignores_checkpoint_for_a_different_input_repo(self, tmp_path):
+        repo_a = tmp_path / "repo_a"
+        repo_a.mkdir()
+        (repo_a / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(repo_a, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        repo_b = tmp_path / "repo_b"
+        repo_b.mkdir()
+        (repo_b / "a.ts").write_text("const a = 1;")
+        provider = MockProvider("y = 2")
+        report = translate_repo(repo_b, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # not skipped — different repo_path
+        assert report.files[0].status == "ok"
+
+    def test_resume_ignores_checkpoint_for_a_different_language_pair(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider("fn main() {}")
+        translate_repo(tmp_path, out, "ts", "rust", provider=provider,
+                       translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # not skipped — different to_lang
+
+    def test_resume_ignores_checkpoint_entry_if_dest_file_missing(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        (out / "a.py").unlink()  # simulate the output being deleted separately
+
+        provider = MockProvider("y = 2")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # re-translated, not trusted from the checkpoint
+        assert (out / "a.py").read_text() == "y = 2"
+
+    def test_corrupted_checkpoint_is_ignored_not_fatal(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        out.mkdir(parents=True)
+        (out / ".translation_state.json").write_text("not valid json {{{")
+
+        provider = MockProvider("x = 1")
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert report.files[0].status == "ok"
+        assert len(provider.calls) == 1
+
+    def test_failed_files_are_not_treated_as_resumable(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python",
+                        provider=MockProvider(raises=Exception("quota exceeded")),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider("x = 1")
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider.calls) == 1  # re-attempted, not skipped as "done"
+        assert report.files[0].status == "ok"
+
+    def test_verbose_prints_resume_summary_and_per_file_message(self, tmp_path, capsys):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        provider = MockProvider(raises=Exception("should not be called"))
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=True, score_confidence=False)
+
+        out_text = capsys.readouterr().out
+        assert "Resuming: 1 file(s) already completed" in out_text
+        assert "resumed from checkpoint" in out_text
+
+    def test_emits_file_done_event_for_resumed_file(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        out = tmp_path / "out"
+        translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                        translate_manifests=False, verbose=False, score_confidence=False)
+
+        events: list[dict] = []
+        provider = MockProvider(raises=Exception("should not be called"))
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False,
+                        on_progress=events.append)
+
+        done_events = [e for e in events if e["type"] == "file_done"]
+        assert done_events == [{
+            "type": "file_done", "index": 1, "total": 1, "path": "a.ts",
+            "status": "ok", "attempts": 1, "confidence": None,
+        }]
+
+    def test_partial_run_resumes_only_the_unfinished_files(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const a = 1;")
+        (tmp_path / "b.ts").write_text("const b = 1;")
+        out = tmp_path / "out"
+
+        # First run: "a" succeeds, "b" fails outright (API error every attempt).
+        provider = MockProvider("x = 1")
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                        translate_manifests=False, verbose=False, score_confidence=False)
+        # Now hand-corrupt the checkpoint to simulate b.ts having failed, since
+        # MockProvider can't easily fail only one of two files by content.
+        state_file = out / ".translation_state.json"
+        data = json.loads(state_file.read_text())
+        data["files"].append({"path": "b.ts", "status": "failed", "attempts": 3,
+                              "error": "boom", "run_output": None,
+                              "confidence": None, "confidence_reason": None})
+        state_file.write_text(json.dumps(data))
+        (out / "b.py").unlink(missing_ok=True)
+
+        provider2 = MockProvider("y = 2")
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider2,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        assert len(provider2.calls) == 1  # only b.ts re-translated
+        assert provider2.calls[0].count("const b = 1;") == 1
+        statuses = {f.path: f.status for f in report.files}
+        assert statuses == {"a.ts": "ok", "b.ts": "ok"}
+
+
 class TestTranslateRepoVerboseOutput:
     """
     All of these paths print(...) only under verbose=True — every other test
@@ -528,6 +727,194 @@ class TestTranslateRepoTestFileSplit:
                         translate_manifests=False, verbose=False, score_confidence=False)
 
         assert "TEST file" not in provider.last_prompt
+
+
+class TestRunTestsWithRetry:
+    """
+    Unlike source files (auto-fixed via _try_run inside the main loop),
+    the translated test suite used to run() exactly once regardless of the
+    result. This mirrors that same retry-on-failure pattern for the suite.
+    """
+
+    def test_retries_and_succeeds_on_second_attempt(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "2 passed")]) as mock_run:
+            report = translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        assert mock_run.call_count == 2
+        assert report.tests_passed is True
+        assert report.test_output == "2 passed"
+
+    def test_gives_up_after_max_fix_attempts(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "still failing")) as mock_run:
+            report = translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        assert mock_run.call_count == 3  # default MAX_FIX_ATTEMPTS
+        assert report.tests_passed is False
+        assert report.test_output == "still failing"
+
+    def test_offline_style_provider_never_retries(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+        provider.max_fix_attempts = 1
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "failed")) as mock_run:
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        mock_run.assert_called_once()
+
+    def test_no_retry_when_there_are_no_test_files(self, tmp_path):
+        # rust's cargo test runs against test_files=[] (test_patterns == []
+        # for the target language) — nothing to re-translate, so one attempt.
+        (tmp_path / "main.py").write_text("print('hi')")
+        out = tmp_path / "out"
+        provider = MockProvider("fn main() {}")
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "failed")) as mock_run:
+            translate_repo(
+                tmp_path, out, "python", "rust", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        mock_run.assert_called_once()
+
+    def test_retry_re_translates_test_files_with_failure_as_context(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "AssertionError: boom"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        # One prompt per source file on the first pass, plus one more per
+        # test file on the retry — the retry prompt must carry the failure.
+        # ts_repo_with_tests has two test files (math.test.ts, util.spec.ts).
+        retry_prompts = [p for p in provider.calls if "AssertionError: boom" in p]
+        assert len(retry_prompts) == 2
+        assert all("TEST file" in p for p in retry_prompts)
+
+    def test_verbose_prints_retry_message(self, ts_repo_with_tests, tmp_path, capsys):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=True, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        out_text = capsys.readouterr().out
+        assert "re-translating" in out_text
+        assert "attempt 2/3" in out_text
+
+    def test_emits_tests_retry_progress_event(self, ts_repo_with_tests, tmp_path):
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+        events: list[dict] = []
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True, on_progress=events.append,
+            )
+
+        retry_events = [e for e in events if e["type"] == "tests_retry"]
+        assert retry_events == [{"type": "tests_retry", "attempt": 2, "total": 3}]
+
+    def test_re_translation_failure_leaves_previous_file_in_place(self, ts_repo_with_tests, tmp_path):
+        # Initial-pass calls (no error_context / fix note) succeed; any retry
+        # call (recognizable by the fix note _translate_once adds) raises.
+        class _FlakyOnRetryProvider(LLMProvider):
+            max_fix_attempts = 3
+
+            def complete(self, prompt: str, max_tokens: int = 8096) -> str:
+                if "previous translation produced this runtime error" in prompt:
+                    raise Exception("quota exceeded")
+                return "x = 1"
+
+        out = tmp_path / "out"
+
+        with patch("repo_translator.agent.run_tests",
+                   return_value=(False, "still failing")):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=_FlakyOnRetryProvider(),
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        # Both test files' dest should still hold the original translation,
+        # not be deleted or left corrupt by the failed re-translation attempts.
+        for name in ("math.test.py", "util.spec.py"):
+            dest = out / name
+            assert dest.exists()
+            assert dest.read_text() == "x = 1"
+
+    def test_verbose_prints_re_translation_failure(self, ts_repo_with_tests, tmp_path, capsys):
+        class _FlakyOnRetryProvider(LLMProvider):
+            max_fix_attempts = 3
+
+            def complete(self, prompt: str, max_tokens: int = 8096) -> str:
+                if "previous translation produced this runtime error" in prompt:
+                    raise Exception("quota exceeded")
+                return "x = 1"
+
+        out = tmp_path / "out"
+
+        with patch("repo_translator.agent.run_tests", return_value=(False, "still failing")):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=_FlakyOnRetryProvider(),
+                translate_manifests=False, verbose=True, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        assert "Failed to re-translate" in capsys.readouterr().out
+
+    def test_empty_test_file_is_skipped_on_retry(self, ts_repo_with_tests, tmp_path):
+        (ts_repo_with_tests / "util.spec.ts").write_text("   \n  ")
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent.run_tests",
+                   side_effect=[(False, "1 failed"), (True, "ok")]):
+            translate_repo(
+                ts_repo_with_tests, out, "ts", "python", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True,
+            )
+
+        # Empty source files were already written as empty and skipped in the
+        # main loop; the retry pass must not choke re-processing them either.
+        assert (out / "util.spec.py").read_text() == ""
 
 
 class TestPriceLabel:
@@ -877,3 +1264,356 @@ class TestTranslateOncePrompt:
             provider, "x = 1", "python", "swift", is_test=True,
         )
         assert "the standard test framework" in provider.last_prompt
+
+
+# ─────────────────────────────────────────────
+# _split_into_chunks / large-file chunking
+# ─────────────────────────────────────────────
+
+class TestSplitIntoChunks:
+    def test_source_under_threshold_returned_unchanged(self):
+        source = "a = 1\n\nb = 2\n"
+        assert _split_into_chunks(source, threshold=1000) == [source]
+
+    def test_source_exactly_at_threshold_not_split(self):
+        source = "x" * 50
+        assert _split_into_chunks(source, threshold=50) == [source]
+
+    def test_splits_at_blank_line_boundaries(self):
+        block_a = "def a():\n    pass"
+        block_b = "def b():\n    pass"
+        block_c = "def c():\n    pass"
+        source = f"{block_a}\n\n{block_b}\n\n{block_c}"
+        chunks = _split_into_chunks(source, threshold=len(block_a) + 1)
+        assert len(chunks) > 1
+        # No chunk boundary falls inside a block.
+        for block in (block_a, block_b, block_c):
+            assert sum(block in c for c in chunks) == 1
+
+    def test_concatenated_chunks_reproduce_source_exactly(self):
+        source = "one\n\ntwo\n\nthree\n\nfour\n\nfive\n"
+        chunks = _split_into_chunks(source, threshold=8)
+        assert len(chunks) > 1
+        assert "".join(chunks) == source
+
+    def test_greedily_packs_small_blocks_together(self):
+        source = "a\n\nb\n\nc\n\nd\n"
+        chunks = _split_into_chunks(source, threshold=100)
+        # Well under the threshold — everything fits in one chunk even
+        # though there are several blank-line-separated blocks.
+        assert chunks == [source]
+
+    def test_single_oversized_block_kept_whole_rather_than_split(self):
+        # No blank lines at all: nothing to split on, so the whole thing
+        # is returned as one (oversized) chunk rather than dropped or cut
+        # mid-line.
+        source = "x = 1\n" * 100
+        chunks = _split_into_chunks(source, threshold=10)
+        assert chunks == [source]
+
+    def test_default_threshold_is_the_module_constant(self):
+        short = "a = 1\n"
+        assert _split_into_chunks(short) == [short]
+        long_source = "a" * (agent.CHUNK_THRESHOLD_CHARS + 1)
+        assert _split_into_chunks(long_source) == [long_source]  # no blank line to split on
+
+
+class TestTranslateOnceChunking:
+    def test_small_file_makes_a_single_provider_call(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 10_000)
+        provider = CapturingProvider("translated")
+        result = _translate_once(provider, "x = 1\n", "python", "rust")
+        assert len(provider.calls) == 1
+        assert result == "translated"
+
+    def test_large_file_is_split_into_multiple_calls(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider("OUT")
+        result = _translate_once(provider, source, "python", "rust")
+        assert len(provider.calls) == 3
+        assert result == "OUTOUTOUT"  # concatenated, in order
+
+    def test_chunk_prompts_are_numbered_and_note_the_total(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider("OUT")
+        _translate_once(provider, source, "python", "rust")
+        assert "chunk 1 of 3" in provider.calls[0]
+        assert "chunk 2 of 3" in provider.calls[1]
+        assert "chunk 3 of 3" in provider.calls[2]
+
+    def test_unchunked_prompt_has_no_chunk_note(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 10_000)
+        provider = CapturingProvider()
+        _translate_once(provider, "x = 1\n", "python", "rust")
+        assert "chunk" not in provider.last_prompt.lower()
+
+    def test_error_context_and_is_test_carried_into_every_chunk(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider("OUT")
+        _translate_once(
+            provider, source, "python", "rust",
+            is_test=True, error_context="boom: it broke",
+        )
+        assert len(provider.calls) == 3
+        for call in provider.calls:
+            assert "TEST file" in call
+            assert "boom: it broke" in call
+
+    def test_chunk_boundary_source_preserved_verbatim_across_calls(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        block_a = "a" * 10
+        block_b = "b" * 10
+        source = f"{block_a}\n\n{block_b}"
+        provider = CapturingProvider("OUT")
+        _translate_once(provider, source, "python", "rust")
+        assert block_a in provider.calls[0]
+        assert block_b not in provider.calls[0]
+        assert block_b in provider.calls[1]
+
+
+class TestTranslateRepoChunking:
+    def test_large_file_records_chunk_count_in_file_result(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        (tmp_path / "big.py").write_text("a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10)
+        out = tmp_path / "out"
+        provider = MockProvider("OUT")
+
+        report = translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert report.files[0].status == "ok"
+        assert report.files[0].chunks == 3
+
+    def test_small_file_leaves_chunks_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 10_000)
+        (tmp_path / "small.py").write_text("x = 1\n")
+        out = tmp_path / "out"
+        provider = MockProvider("y = 1")
+
+        report = translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert report.files[0].chunks is None
+
+    def test_verbose_output_notes_the_chunk_count(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        (tmp_path / "big.py").write_text("a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10)
+        out = tmp_path / "out"
+        provider = MockProvider("OUT")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=True, score_confidence=False,
+        )
+
+        assert "(split into 3 chunks)" in capsys.readouterr().out
+
+    def test_chunked_translation_written_concatenated_to_output_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        (tmp_path / "big.py").write_text("a" * 10 + "\n\n" + "b" * 10)
+        out = tmp_path / "out"
+        provider = MockProvider("print(1)\n")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        # Runner isn't configured for rust, so _try_run soft-passes and the
+        # concatenation of both chunk responses is written verbatim.
+        assert (out / "big.rs").read_text() == "print(1)\n" * 2
+
+
+# ─────────────────────────────────────────────
+# Cross-file context (--cross-file-context)
+# ─────────────────────────────────────────────
+
+class TestExtractSymbols:
+    def test_python_top_level_def_and_class(self):
+        source = "def foo():\n    pass\n\nclass Bar:\n    def method(self):\n        pass\n"
+        assert _extract_symbols(source, "python") == ["foo", "Bar"]
+
+    def test_python_indented_defs_not_top_level(self):
+        source = "class Bar:\n    def method(self):\n        pass\n"
+        # "method" is indented (inside the class), so it isn't picked up —
+        # only the top-level "Bar".
+        assert _extract_symbols(source, "python") == ["Bar"]
+
+    def test_typescript_exported_declarations(self):
+        source = (
+            "export function add(a, b) { return a + b; }\n"
+            "export class Widget {}\n"
+            "export const PI = 3.14;\n"
+            "function helper() {}\n"  # not exported — should be excluded
+        )
+        assert _extract_symbols(source, "typescript") == ["add", "Widget", "PI"]
+
+    def test_go_func_and_type(self):
+        source = "func Add(a, b int) int {\n\treturn a + b\n}\n\ntype Point struct{}\n"
+        assert _extract_symbols(source, "go") == ["Add", "Point"]
+
+    def test_go_method_with_receiver_captures_method_name(self):
+        source = "func (p *Point) String() string {\n\treturn \"\"\n}\n"
+        assert _extract_symbols(source, "go") == ["String"]
+
+    def test_rust_pub_items(self):
+        source = "pub fn run() {}\npub struct Config {}\nfn private_helper() {}\n"
+        assert _extract_symbols(source, "rust") == ["run", "Config"]
+
+    def test_unmapped_language_returns_empty_list(self):
+        assert _extract_symbols("class Foo {}", "cpp") == []
+        assert _extract_symbols("int main() {}", "c") == []
+
+    def test_no_duplicate_names(self):
+        source = "def foo():\n    pass\n\ndef foo():\n    pass\n"
+        assert _extract_symbols(source, "python") == ["foo"]
+
+    def test_symbol_count_capped(self):
+        source = "\n\n".join(f"def f{i}():\n    pass" for i in range(50))
+        symbols = _extract_symbols(source, "python")
+        assert len(symbols) == agent._MAX_SYMBOLS_PER_FILE
+
+
+class TestBuildRepoMap:
+    def test_maps_relative_paths_to_symbols(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "b.py").write_text("class Bar:\n    pass\n")
+        files = [tmp_path / "a.py", tmp_path / "b.py"]
+
+        repo_map = _build_repo_map(files, tmp_path, "python")
+
+        assert repo_map == {"a.py": ["foo"], "b.py": ["Bar"]}
+
+    def test_nested_paths_are_relative_to_repo_root(self, tmp_path):
+        nested = tmp_path / "pkg"
+        nested.mkdir()
+        (nested / "mod.py").write_text("def f():\n    pass\n")
+        files = [nested / "mod.py"]
+
+        repo_map = _build_repo_map(files, tmp_path, "python")
+
+        assert repo_map == {"pkg/mod.py": ["f"]}
+
+    def test_unreadable_file_is_skipped_not_raised(self, tmp_path, monkeypatch):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+
+        def _raise(self, *a, **kw):
+            raise OSError("permission denied")
+        monkeypatch.setattr(Path, "read_text", _raise)
+
+        repo_map = _build_repo_map([tmp_path / "a.py"], tmp_path, "python")
+        assert repo_map == {}
+
+
+class TestFormatRepoMap:
+    def test_excludes_the_current_file(self):
+        repo_map = {"a.py": ["foo"], "b.py": ["Bar"]}
+        formatted = _format_repo_map(repo_map, exclude="a.py")
+        assert "a.py" not in formatted
+        assert "b.py" in formatted
+
+    def test_lists_symbols_after_the_path(self):
+        formatted = _format_repo_map({"a.py": ["foo", "Bar"]}, exclude="")
+        assert formatted == "- a.py: foo, Bar"
+
+    def test_file_with_no_symbols_has_no_trailing_colon(self):
+        formatted = _format_repo_map({"a.py": []}, exclude="")
+        assert formatted == "- a.py"
+
+    def test_empty_map_returns_empty_string(self):
+        assert _format_repo_map({}, exclude="") == ""
+
+    def test_truncates_past_threshold_and_notes_omitted_count(self):
+        repo_map = {f"file{i}.py": ["sym"] for i in range(20)}
+        formatted = _format_repo_map(repo_map, exclude="", threshold=50)
+        assert "more file(s) omitted" in formatted
+        # Not every file made it into the (small) threshold.
+        assert formatted.count("- file") < 20
+
+
+class TestTranslateOnceCrossFileContext:
+    def test_no_repo_context_omits_the_note_and_listing(self):
+        provider = CapturingProvider()
+        _translate_once(provider, "x = 1\n", "python", "go")
+        assert "Other files in this repo" not in provider.last_prompt
+
+    def test_repo_context_appended_after_the_source_block(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "x = 1\n", "python", "go",
+            repo_context="- other.py: helper",
+        )
+        assert "Other files in this repo" in provider.last_prompt
+        assert "- other.py: helper" in provider.last_prompt
+        # Comes after the fenced source block, not inside it.
+        assert provider.last_prompt.index("```\n") < provider.last_prompt.index("other.py")
+
+    def test_repo_context_included_in_every_chunk(self, monkeypatch):
+        monkeypatch.setattr(agent, "CHUNK_THRESHOLD_CHARS", 20)
+        source = "a" * 10 + "\n\n" + "b" * 10 + "\n\n" + "c" * 10
+        provider = CapturingProvider()
+        _translate_once(
+            provider, source, "python", "go", repo_context="- other.py: helper",
+        )
+        assert len(provider.calls) == 3
+        for call in provider.calls:
+            assert "- other.py: helper" in call
+
+
+class TestTranslateRepoCrossFileContext:
+    def test_disabled_by_default_prompt_has_no_repo_map(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "b.py").write_text("def bar():\n    pass\n")
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert all("Other files in this repo" not in c for c in provider.calls)
+
+    def test_enabled_includes_other_files_symbols_excluding_self(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "b.py").write_text("def bar():\n    pass\n")
+        out = tmp_path / "out"
+        provider = CapturingProvider("x = 1")
+
+        translate_repo(
+            tmp_path, out, "python", "rust", provider=provider,
+            translate_manifests=False, verbose=False, score_confidence=False,
+            cross_file_context=True,
+        )
+
+        # files are processed in sorted order (a.py, then b.py); each call's
+        # prompt should mention the *other* file, never itself.
+        a_prompt, b_prompt = provider.calls
+        assert "b.py" in a_prompt and "bar" in a_prompt
+        assert "a.py" not in a_prompt.split("Other files in this repo")[1]
+        assert "a.py" in b_prompt and "foo" in b_prompt
+
+    def test_cross_file_context_reaches_test_retry_translation(self, tmp_path):
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+        (tmp_path / "a_test.py").write_text("def test_foo():\n    assert foo() is None\n")
+        out = tmp_path / "out"
+        provider = CapturingProvider("assert False")
+
+        with patch("repo_translator.agent.run_tests", return_value=(False, "boom")):
+            translate_repo(
+                tmp_path, out, "python", "rust", provider=provider,
+                translate_manifests=False, verbose=False, score_confidence=False,
+                run_tests_after=True, cross_file_context=True,
+            )
+
+        # The last call is the test-retry re-translation of a_test.py; it
+        # should still carry the repo map (mentioning a.py's "foo").
+        assert "a.py" in provider.last_prompt
+        assert "foo" in provider.last_prompt
