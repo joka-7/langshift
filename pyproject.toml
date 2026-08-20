@@ -57,7 +57,7 @@ all-providers = [
 # repo-translator-specific to configure). Not part of `dev`/`all-providers` so
 # CI and the default install never need that access.
 model-dispatcher = [
-    "model-dispatcher[openai,anthropic,gemini] @ git+https://github.com/joka-7/ModelDispatcher.git@0b265175ee96c5681f98482bee1e428d25cfa9a2",
+    "model-dispatcher[openai,anthropic,gemini] @ git+https://github.com/joka-7/ModelDispatcher.git@3a71a603c3cb0eba12297d9e781170a616142e6a",
 ]
 
 [tool.pytest.ini_options]
@@ -101,12 +101,21 @@ ignore_missing_imports = true
 # installed; ignore_missing_imports keeps mypy usable without all extras.
 
 [[tool.mypy.overrides]]
-# model-dispatcher (the [model-dispatcher] extra) requires Python >=3.12 and
-# uses 3.12-only syntax (PEP 695 `type` statements) in its own source. mypy
-# would otherwise try to parse that source under this project's
-# python_version = "3.10" target and fail on syntax it doesn't have anything
-# to do with checking here. follow_imports = "skip" treats it as opaque/Any
-# instead — repo_translator's own use of it is still checked normally.
+# model-dispatcher's floor dropped from 3.12 to 3.11 in
+# https://github.com/joka-7/ModelDispatcher/pull/12 (was previously 3.12-only
+# PEP 695 syntax mypy couldn't parse at all here — now fixed upstream). One
+# real mismatch remains though: model_dispatcher.types.Role/ErrorClass are
+# StrEnum (stdlib since 3.11), and mypy resolves enum members against
+# whichever `python_version` it's targeting — under this project's "3.10"
+# target, StrEnum isn't in scope, so mypy silently degrades `Role.USER` etc.
+# to plain `str` instead of erroring, which then looks like an incompatible
+# type at every call site that passes one to model_dispatcher (verified via
+# `reveal_type`: "str" under --python-version 3.10 vs. the correct
+# `Literal[Role.USER]` under 3.11). mypy has no per-module python_version
+# override (tried; it rejects the option outside the top-level [mypy]
+# section), so — same as before PR #12 — follow_imports="skip" treats the
+# package as opaque/Any at the boundary rather than raising a false positive
+# on every call. repo_translator's own use of it still type-checks normally.
 module = "model_dispatcher.*"
 follow_imports = "skip"
 

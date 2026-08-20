@@ -87,14 +87,14 @@ identical across all of them instead of drifting in separate implementations. `o
 any of them yet.
 
 ```bash
-pip install -e ".[model-dispatcher]"   # requires Python >=3.12 — see note below
+pip install -e ".[model-dispatcher]"   # requires Python >=3.11 — see note below
 repo-translate --input ./my-repo --from ts --to python --provider claude --backend model-dispatcher
 ```
 
-> **Requires Python ≥3.12.** ModelDispatcher itself needs it, which is newer than this repo's
-> own minimum (3.10). `pip install ".[model-dispatcher]"` fails clearly with a Python-version
-> error if you're on an older interpreter — everything else in this repo still works fine
-> either way.
+> **Requires Python ≥3.11.** ModelDispatcher itself needs it, which is newer than this repo's
+> own minimum (3.10) — though it's the same version this repo's own CI already runs on.
+> `pip install ".[model-dispatcher]"` fails clearly with a Python-version error if you're on
+> 3.10 — everything else in this repo still works fine either way.
 >
 > **Requires git access to ModelDispatcher.** It's currently a private repo, so the extra's
 > `git+https://` URL only resolves for someone with access — `pip install` will prompt for

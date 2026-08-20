@@ -44,7 +44,7 @@ repo_translator/
 │                    (--backend model-dispatcher / $LANGSHIFT_BACKEND) routing
 │                    claude/openai/gemini/groq through the shared ModelDispatcher gateway
 │                    instead of this repo's own SDK calls + retry.py; requires the optional
-│                    `model-dispatcher` extra (Python >=3.12, private-repo git dependency) —
+│                    `model-dispatcher` extra (Python >=3.11, private-repo git dependency) —
 │                    see README.md § "Backend: native vs. model-dispatcher".
 ├── offline/       — rule-based, LLM-free transformer (currently ts/js → python) used by the
 │                    `offline` provider; ts_to_py.py is the ~75%-coverage rewrite engine
