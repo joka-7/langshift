@@ -1,0 +1,18 @@
+# Copy this to your project root as `ai-config.toml` and edit.
+# Then run:  python .ai/bin/ai-sync
+
+[project]
+name = "langshift"
+
+[stack]
+languages  = ["python"]
+practices  = ["testing", "git-commits", "security", "architecture"]
+
+[tools]
+targets = ["claude", "cursor", "gemini", "copilot"]
+
+[options]
+link_mode = "symlink"
+local_tail = "ai-config.local.md"
+cursor_mdc = false
+claude_agents = false
