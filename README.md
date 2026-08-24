@@ -95,10 +95,6 @@ repo-translate --input ./my-repo --from ts --to python --provider claude --backe
 > own minimum (3.10) — though it's the same version this repo's own CI already runs on.
 > `pip install ".[model-dispatcher]"` fails clearly with a Python-version error if you're on
 > 3.10 — everything else in this repo still works fine either way.
->
-> **Requires git access to ModelDispatcher.** It's currently a private repo, so the extra's
-> `git+https://` URL only resolves for someone with access — `pip install` will prompt for
-> credentials or use your normal git credential helper.
 
 ### When a file's translation fails: a free external-AI fallback
 

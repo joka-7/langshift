@@ -51,13 +51,12 @@ all-providers = [
 # cover claude/openai/gemini/groq (Groq is an `openai`-SDK adapter there too) —
 # note its `gemini` extra installs `google-genai`, not this repo's own `gemini`
 # extra's `google-generativeai`; the two SDKs don't overlap.
-# ModelDispatcher is currently a private repo: this URL only resolves for
-# someone with git access to it (`pip install`'s git+https prompts for
-# credentials, or reads them from your normal git credential helper — nothing
-# repo-translator-specific to configure). Not part of `dev`/`all-providers` so
-# CI and the default install never need that access.
+# ModelDispatcher is public and published to PyPI (since v0.3.0), so this is a
+# normal PyPI dependency — no git access or credentials needed. Not part of
+# `dev`/`all-providers` so the default install doesn't pull in a package most
+# users won't use.
 model-dispatcher = [
-    "model-dispatcher[openai,anthropic,gemini] @ git+https://github.com/joka-7/ModelDispatcher.git@3a71a603c3cb0eba12297d9e781170a616142e6a",
+    "model-dispatcher[openai,anthropic,gemini]>=0.3.0",
 ]
 
 [tool.pytest.ini_options]
