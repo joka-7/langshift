@@ -100,6 +100,22 @@ repo-translate --input ./my-repo --from ts --to python --provider claude --backe
 > `git+https://` URL only resolves for someone with access — `pip install` will prompt for
 > credentials or use your normal git credential helper.
 
+### When a file's translation fails: a free external-AI fallback
+
+If a file exhausts every retry (rate limit, API outage, no API key configured, etc.), it's
+marked `failed` — but the run doesn't just leave you with an error message. The report also
+includes deep links straight into free public AI chat products (ChatGPT, Claude, Gemini's
+Google AI Mode, Groq), each pre-filled with a plain-English version of that file's translation
+request, so there's still a concrete next step even when every configured provider is down.
+
+This is the CLI analogue of the `openExternalChat` escape hatch in
+`@joka-7/modeldispatcher-browser-agent`, the shared package this project's browser-based sibling
+apps use for the same purpose — reimplemented here in `repo_translator/providers/external_chat.py`
+since LangShift is a terminal tool, not a browser page: with `--verbose`, the links are printed
+straight to the terminal (most modern terminals turn a printed `http(s)` URL into something
+clickable on their own); either way they're saved into `translation_report.json`
+(`files[].external_chat_urls`) and `translation_report.md` for every failed file.
+
 ---
 
 ## Installation

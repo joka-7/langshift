@@ -46,6 +46,9 @@ repo_translator/
 │                    instead of this repo's own SDK calls + retry.py; requires the optional
 │                    `model-dispatcher` extra (Python >=3.11, private-repo git dependency) —
 │                    see README.md § "Backend: native vs. model-dispatcher".
+│                    external_chat.py builds the free-AI-chat deep links agent.py attaches to
+│                    a FileResult once a file fails every retry — see README.md § "When a
+│                    file's translation fails: a free external-AI fallback".
 ├── offline/       — rule-based, LLM-free transformer (currently ts/js → python) used by the
 │                    `offline` provider; ts_to_py.py is the ~75%-coverage rewrite engine
 └── webui/         — FastAPI backend for the web UI (jobs.py: background job manager +
@@ -67,6 +70,7 @@ tests/
 ├── test_providers.py— unit tests, one class per provider, SDKs mocked via sys.modules
 ├── test_retry.py    — unit tests for the backoff/retry wrapper (time.sleep always mocked)
 ├── test_report.py   — unit tests
+├── test_external_chat.py — unit tests for the free-AI-chat fallback URL builders
 ├── test_webui.py    — webui backend tests (FastAPI TestClient + offline provider)
 │                       [pytest.mark.integration]
 └── test_integration.py — real subprocess CLI runs, offline provider [pytest.mark.integration]

@@ -22,6 +22,10 @@ class FileResult:
     confidence: int | None = None
     confidence_reason: str | None = None
     chunks: int | None = None  # >1 if the file was too large for one call and got split
+    # Set only when status == "failed": {provider_name: url} deep links into a
+    # free public AI chat, pre-filled with a plain-English version of this
+    # file's translation request — see providers/external_chat.py.
+    external_chat_urls: dict[str, str] | None = None
 
 
 @dataclass
@@ -112,6 +116,10 @@ class TranslationReport:
                     err_line = (f.error or "unknown error").splitlines()[0][:100]
                     print(f"     • {f.path}")
                     print(f"       └─ {err_line}")
+                    if f.external_chat_urls:
+                        print("       └─ Or ask directly:")
+                        for name, url in f.external_chat_urls.items():
+                            print(f"          {name}: {url}")
 
         print(f"\n   📁 Output : {self.output_path}")
         print("  ══════════════════════════════════════════════\n")
@@ -208,6 +216,10 @@ class TranslationReport:
                 if f.error:
                     err = f.error.splitlines()[0][:200]
                     lines.append(f"  - Error: `{err}`")
+                if f.external_chat_urls:
+                    lines.append("  - Or ask directly: " + ", ".join(
+                        f"[{name}]({url})" for name, url in f.external_chat_urls.items()
+                    ))
             lines.append("")
 
         if skipped_files:
