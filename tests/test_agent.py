@@ -388,6 +388,31 @@ class TestTranslateRepo:
         assert report.translated == 0
         assert "API quota exceeded" in report.files[0].error
 
+    def test_api_error_offers_external_chat_urls_as_a_fallback(self, tmp_path):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+        out      = tmp_path / "out"
+        provider = MockProvider(Exception("API quota exceeded"))
+
+        report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False, score_confidence=False)
+
+        urls = report.files[0].external_chat_urls
+        assert urls is not None
+        assert set(urls) == {"ChatGPT", "Claude", "Gemini (Google AI Mode)", "Groq"}
+        assert all(url.startswith("https://") for url in urls.values())
+
+    def test_verbose_prints_external_chat_urls_on_failure(self, tmp_path, capsys):
+        (tmp_path / "main.ts").write_text("const x = 1;")
+        out      = tmp_path / "out"
+        provider = MockProvider(Exception("API quota exceeded"))
+
+        translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                       translate_manifests=False, verbose=True, score_confidence=False)
+
+        out_text = capsys.readouterr().out
+        assert "Or ask directly:" in out_text
+        assert "Claude: https://claude.ai/new?" in out_text
+
     def test_multiple_files_all_translated(self, tmp_path):
         for name in ["a.ts", "b.ts", "c.ts"]:
             (tmp_path / name).write_text(f"const {name[0]} = 1;")

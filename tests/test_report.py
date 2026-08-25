@@ -28,6 +28,17 @@ class TestFileResult:
         f = FileResult(path="big.ts", status="ok", chunks=3)
         assert f.chunks == 3
 
+    def test_external_chat_urls_defaults_to_none(self):
+        f = FileResult(path="src/main.ts", status="ok")
+        assert f.external_chat_urls is None
+
+    def test_stores_external_chat_urls(self):
+        f = FileResult(
+            path="x.ts", status="failed", error="boom",
+            external_chat_urls={"Claude": "https://claude.ai/new?q=x"},
+        )
+        assert f.external_chat_urls == {"Claude": "https://claude.ai/new?q=x"}
+
 
 # ─────────────────────────────────────────────
 # TranslationReport — computed properties
@@ -216,6 +227,34 @@ class TestTranslationReportSave:
         md = (tmp_path / "translation_report.md").read_text()
         assert "src/broken.ts" in md
 
+    def test_markdown_failed_file_with_external_chat_urls_links_them(self, tmp_path):
+        r = _make_report()
+        r.files = [FileResult(
+            "a.ts", "failed", error="boom",
+            external_chat_urls={"Claude": "https://claude.ai/new?q=x"},
+        )]
+        r.save(tmp_path)
+        md = (tmp_path / "translation_report.md").read_text()
+        assert "Or ask directly:" in md
+        assert "[Claude](https://claude.ai/new?q=x)" in md
+
+    def test_markdown_failed_file_without_external_chat_urls_has_no_offer(self, tmp_path):
+        r = _make_report()
+        r.files = [FileResult("a.ts", "failed", error="boom")]
+        r.save(tmp_path)
+        md = (tmp_path / "translation_report.md").read_text()
+        assert "Or ask directly:" not in md
+
+    def test_json_round_trips_external_chat_urls(self, tmp_path):
+        r = _make_report()
+        r.files = [FileResult(
+            "a.ts", "failed", error="boom",
+            external_chat_urls={"Claude": "https://claude.ai/new?q=x"},
+        )]
+        r.save(tmp_path)
+        data = json.loads((tmp_path / "translation_report.json").read_text())
+        assert data["files"][0]["external_chat_urls"] == {"Claude": "https://claude.ai/new?q=x"}
+
     def test_markdown_mentions_manifest(self, tmp_path):
         r = self._full_report()
         r.save(tmp_path)
@@ -374,3 +413,21 @@ class TestPrintSummary:
         assert "second line should not appear" not in out
         assert ("x" * 100) in out
         assert ("x" * 101) not in out
+
+    def test_failed_file_with_external_chat_urls_prints_them(self, capsys):
+        r = _make_report()
+        r.files = [FileResult(
+            "a.ts", "failed", error="boom",
+            external_chat_urls={"Claude": "https://claude.ai/new?q=x", "Groq": "https://groq.com/"},
+        )]
+        r.print_summary()
+        out = capsys.readouterr().out
+        assert "Or ask directly:" in out
+        assert "Claude: https://claude.ai/new?q=x" in out
+        assert "Groq: https://groq.com/" in out
+
+    def test_failed_file_without_external_chat_urls_has_no_offer(self, capsys):
+        r = _make_report()
+        r.files = [FileResult("a.ts", "failed", error="boom")]
+        r.print_summary()
+        assert "Or ask directly:" not in capsys.readouterr().out

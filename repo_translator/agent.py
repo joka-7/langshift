@@ -16,6 +16,10 @@ from pathlib import Path
 
 from repo_translator.manifest import _find_manifests, translate_manifest
 from repo_translator.providers.base import LLMProvider
+from repo_translator.providers.external_chat import (
+    build_external_chat_urls,
+    build_translation_question,
+)
 from repo_translator.providers.retry import complete_with_backoff
 from repo_translator.report import FileResult, TranslationReport
 
@@ -987,10 +991,18 @@ def translate_repo(
             except Exception as e:
                 if verbose:
                     print(f"→ ✗ API error: {e}")
+                chat_urls = build_external_chat_urls(
+                    build_translation_question(source_code, from_lang, to_lang)
+                )
+                if verbose:
+                    print("   Or ask directly:")
+                    for name, url in chat_urls.items():
+                        print(f"     {name}: {url}")
                 report.files.append(FileResult(
                     path=str(rel), status="failed",
                     attempts=attempt, error=str(e),
                     chunks=chunk_count if chunk_count > 1 else None,
+                    external_chat_urls=chat_urls,
                 ))
                 _save_checkpoint(output_path, repo_path, from_lang, to_lang, report)
                 _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),

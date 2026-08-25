@@ -19,7 +19,13 @@ from repo_translator.agent import (
     resolve_language,
     translate_repo,
 )
-from repo_translator.providers import SUPPORTED_PROVIDERS, make_offline_provider, make_provider
+from repo_translator.providers import (
+    DEFAULT_BACKEND,
+    SUPPORTED_BACKENDS,
+    SUPPORTED_PROVIDERS,
+    make_offline_provider,
+    make_provider,
+)
 from repo_translator.providers.base import LLMProvider
 
 
@@ -60,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key",  metavar="KEY", default=None,
                         help="API key (env vars: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
                              "GEMINI_API_KEY, GROQ_API_KEY, OPENAI_COMPAT_API_KEY)")
+    parser.add_argument("--backend", default=DEFAULT_BACKEND,
+                        choices=list(SUPPORTED_BACKENDS),
+                        help="Completion backend (default: "
+                             f"{DEFAULT_BACKEND!r}, or set $LANGSHIFT_BACKEND). "
+                             "'native' talks to the vendor SDK directly, same as always. "
+                             "'model-dispatcher' routes claude/openai/gemini/groq through "
+                             "the shared model-dispatcher gateway instead (same retry/backoff "
+                             "behaviour, just the implementation these other apps share). "
+                             "ollama/openai-compat/offline always run natively either way.")
     parser.add_argument("--estimate", "-e", action="store_true",
                         help="Show token/cost estimate, confirm, then translate")
     parser.add_argument("--yes",      "-y", action="store_true",
@@ -122,6 +137,7 @@ def main() -> None:
   From     : {_ALIAS_MAP[from_key]}
   To       : {_ALIAS_MAP[to_key]}
   Provider : {args.provider} / {args.model}  ({price})
+  Backend  : {args.backend}
   Output   : {output_path}
 """)
 
@@ -167,7 +183,9 @@ def main() -> None:
             to_resolved   = resolve_language(to_key)
             provider = make_offline_provider(from_resolved, to_resolved)
         else:
-            provider = make_provider(args.provider, args.model, args.api_key, args.base_url)
+            provider = make_provider(
+                args.provider, args.model, args.api_key, args.base_url, backend=args.backend
+            )
     except (ImportError, ValueError) as e:
         print(f"Error: {e}")
         sys.exit(1)

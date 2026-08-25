@@ -46,6 +46,18 @@ all-providers = [
     "ollama>=0.1",
     "groq>=0.9",
 ]
+# --backend model-dispatcher (see repo_translator/providers/model_dispatcher_provider.py).
+# Pulled in with model-dispatcher's own [openai,anthropic,gemini] extras — those
+# cover claude/openai/gemini/groq (Groq is an `openai`-SDK adapter there too) —
+# note its `gemini` extra installs `google-genai`, not this repo's own `gemini`
+# extra's `google-generativeai`; the two SDKs don't overlap.
+# ModelDispatcher is public and published to PyPI (since v0.3.0), so this is a
+# normal PyPI dependency — no git access or credentials needed. Not part of
+# `dev`/`all-providers` so the default install doesn't pull in a package most
+# users won't use.
+model-dispatcher = [
+    "model-dispatcher[openai,anthropic,gemini]>=0.3.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -86,6 +98,25 @@ ignore_missing_imports = true
 # The optional provider SDKs (openai, google-generativeai, ollama, groq) are
 # imported lazily inside functions so the package works without them
 # installed; ignore_missing_imports keeps mypy usable without all extras.
+
+[[tool.mypy.overrides]]
+# model-dispatcher's floor dropped from 3.12 to 3.11 in
+# https://github.com/joka-7/ModelDispatcher/pull/12 (was previously 3.12-only
+# PEP 695 syntax mypy couldn't parse at all here — now fixed upstream). One
+# real mismatch remains though: model_dispatcher.types.Role/ErrorClass are
+# StrEnum (stdlib since 3.11), and mypy resolves enum members against
+# whichever `python_version` it's targeting — under this project's "3.10"
+# target, StrEnum isn't in scope, so mypy silently degrades `Role.USER` etc.
+# to plain `str` instead of erroring, which then looks like an incompatible
+# type at every call site that passes one to model_dispatcher (verified via
+# `reveal_type`: "str" under --python-version 3.10 vs. the correct
+# `Literal[Role.USER]` under 3.11). mypy has no per-module python_version
+# override (tried; it rejects the option outside the top-level [mypy]
+# section), so — same as before PR #12 — follow_imports="skip" treats the
+# package as opaque/Any at the boundary rather than raising a false positive
+# on every call. repo_translator's own use of it still type-checks normally.
+module = "model_dispatcher.*"
+follow_imports = "skip"
 
 [project.scripts]
 repo-translate = "repo_translator.cli:main"

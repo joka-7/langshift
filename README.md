@@ -72,6 +72,46 @@ repo-translate --input ./my-repo --from ts --to python --provider claude --model
 
 Install the SDK for the provider(s) you use: `pip install -e ".[all-providers]"` pulls in all of them, or `pip install -e ".[webui]"` for just the web UI's deps.
 
+### Backend: native vs. model-dispatcher
+
+By default (`--backend native`), `claude`/`openai`/`gemini`/`groq` call the vendor SDK directly
+and this repo's own `repo_translator/providers/retry.py` handles rate-limit backoff — nothing
+here changes unless you opt in.
+
+`--backend model-dispatcher` (or `$LANGSHIFT_BACKEND=model-dispatcher`) routes those same four
+providers through [ModelDispatcher](https://github.com/joka-7/ModelDispatcher) instead — the
+shared gateway this project's other apps (AppMyTrip, HighFive, JobFlowTracker, KanDOne,
+StepByLearn) are standardising their own LLM calls on, so retry/backoff behaviour stays
+identical across all of them instead of drifting in separate implementations. `ollama`,
+`openai-compat`, and `offline` always run natively — ModelDispatcher has no equivalent for
+any of them yet.
+
+```bash
+pip install -e ".[model-dispatcher]"   # requires Python >=3.11 — see note below
+repo-translate --input ./my-repo --from ts --to python --provider claude --backend model-dispatcher
+```
+
+> **Requires Python ≥3.11.** ModelDispatcher itself needs it, which is newer than this repo's
+> own minimum (3.10) — though it's the same version this repo's own CI already runs on.
+> `pip install ".[model-dispatcher]"` fails clearly with a Python-version error if you're on
+> 3.10 — everything else in this repo still works fine either way.
+
+### When a file's translation fails: a free external-AI fallback
+
+If a file exhausts every retry (rate limit, API outage, no API key configured, etc.), it's
+marked `failed` — but the run doesn't just leave you with an error message. The report also
+includes deep links straight into free public AI chat products (ChatGPT, Claude, Gemini's
+Google AI Mode, Groq), each pre-filled with a plain-English version of that file's translation
+request, so there's still a concrete next step even when every configured provider is down.
+
+This is the CLI analogue of the `openExternalChat` escape hatch in
+`@joka-7/modeldispatcher-browser-agent`, the shared package this project's browser-based sibling
+apps use for the same purpose — reimplemented here in `repo_translator/providers/external_chat.py`
+since LangShift is a terminal tool, not a browser page: with `--verbose`, the links are printed
+straight to the terminal (most modern terminals turn a printed `http(s)` URL into something
+clickable on their own); either way they're saved into `translation_report.json`
+(`files[].external_chat_urls`) and `translation_report.md` for every failed file.
+
 ---
 
 ## Installation

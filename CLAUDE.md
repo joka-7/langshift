@@ -39,7 +39,16 @@ repo_translator/
 ├── cli.py         — argparse CLI entry point
 ├── providers/     — one module per LLM backend (claude, openai, gemini, groq, ollama,
 │                    openai_compat) plus base.py (LLMProvider ABC) and retry.py
-│                    (rate-limit-aware backoff wrapper used by both agent.py and manifest.py)
+│                    (rate-limit-aware backoff wrapper used by both agent.py and manifest.py).
+│                    model_dispatcher_provider.py is an opt-in alternative backend
+│                    (--backend model-dispatcher / $LANGSHIFT_BACKEND) routing
+│                    claude/openai/gemini/groq through the shared ModelDispatcher gateway
+│                    instead of this repo's own SDK calls + retry.py; requires the optional
+│                    `model-dispatcher` extra (Python >=3.11, private-repo git dependency) —
+│                    see README.md § "Backend: native vs. model-dispatcher".
+│                    external_chat.py builds the free-AI-chat deep links agent.py attaches to
+│                    a FileResult once a file fails every retry — see README.md § "When a
+│                    file's translation fails: a free external-AI fallback".
 ├── offline/       — rule-based, LLM-free transformer (currently ts/js → python) used by the
 │                    `offline` provider; ts_to_py.py is the ~75%-coverage rewrite engine
 └── webui/         — FastAPI backend for the web UI (jobs.py: background job manager +
@@ -61,6 +70,7 @@ tests/
 ├── test_providers.py— unit tests, one class per provider, SDKs mocked via sys.modules
 ├── test_retry.py    — unit tests for the backoff/retry wrapper (time.sleep always mocked)
 ├── test_report.py   — unit tests
+├── test_external_chat.py — unit tests for the free-AI-chat fallback URL builders
 ├── test_webui.py    — webui backend tests (FastAPI TestClient + offline provider)
 │                       [pytest.mark.integration]
 └── test_integration.py — real subprocess CLI runs, offline provider [pytest.mark.integration]
@@ -99,6 +109,8 @@ pyproject.toml — package config, entry points: repo-translate = repo_translato
   (`providers/claude.py`, models in `CLAUDE_MODELS`); OpenAI, Gemini, Groq, Ollama, and any
   OpenAI-compatible endpoint are also supported. An `offline` provider (`providers/offline.py`)
   wraps a pure rule-based transformer (`offline/`) for testing and CI without API calls.
+  Separately, `--backend` (native/model-dispatcher) chooses *how* claude/openai/gemini/groq are
+  called — native SDK calls (default) or the shared ModelDispatcher gateway.
 - **Test files** get a special prompt note specifying the target test framework (e.g. jest → pytest). See `TEST_FRAMEWORK_MAP` in agent.py
 - **Auto-fix loop:** if `_try_run()` fails, the error is passed back to `_translate_once()` as `error_context` for the next attempt
 - **Rate limits:** `providers/retry.py` wraps every provider call (used by both `agent.py` and
