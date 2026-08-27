@@ -1,0 +1,19 @@
+# Hand-written notes for docs/STRUCTURE.md's generated tree.
+# Python files already carry real module docstrings gen_tree.py derives
+# automatically. These notes cover only frontend/ (.tsx, no docstring
+# convention for the generator to read) and top-level orientation.
+
+[notes]
+"repo_translator" = "The CLI/agent package — providers, offline mode, report generation"
+"repo_translator/providers" = "One LLM provider adapter per file, behind a shared base interface"
+"repo_translator/webui" = "FastAPI backend for the web UI (run via `repo-translate-ui`)"
+"repo_translator.egg-info" = "Build metadata (setuptools) — not hand-maintained"
+"frontend" = "React + Vite + TypeScript web UI, talking to repo_translator/webui's API"
+"frontend/src/components/EstimatePanel.tsx" = "Pre-translation cost/token estimate"
+"frontend/src/components/HistoryView.tsx" = "Past translation runs"
+"frontend/src/components/OutputBrowser.tsx" = "Browse the translated output tree"
+"frontend/src/components/ProgressView.tsx" = "Live progress of an in-flight translation"
+"frontend/src/components/ReportView.tsx" = "Renders the Markdown/JSON translation report"
+"frontend/src/components/TranslateForm.tsx" = "Job submission form: source repo, target language, provider"
+"frontend/e2e" = "Playwright end-to-end specs"
+"tests" = "pytest suite for repo_translator (agent, CLI, providers, offline mode)"

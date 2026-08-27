@@ -255,6 +255,35 @@ rules, `gitleaks`, and CodeQL.
 
 ---
 
+## Repo structure
+
+<!-- BEGIN GENERATED TREE (depth=1 entries=all) -->
+```text
+langshift/
+├── .github/
+├── .idea/
+├── docs/
+├── frontend/                  # React + Vite + TypeScript web UI, talking to repo_translator/webui's API
+├── repo_translator/           # The CLI/agent package — providers, offline mode, report generation
+├── repo_translator.egg-info/  # Build metadata (setuptools) — not hand-maintained
+├── tests/                     # Pytest suite for repo_translator (agent, CLI, providers, offline mode)
+├── .gitignore
+├── CLAUDE.md                  # CLAUDE.md — repo-translator
+├── README.md                  # Langshift 🔄
+├── pyproject.toml
+└── uv.lock
+```
+<!-- END GENERATED TREE -->
+
+Full annotated tree, every file: [`docs/STRUCTURE.md`](docs/STRUCTURE.md). Generated —
+regenerate after adding/renaming a file with:
+```bash
+python <ogen-ai>/skills/repo_tree/gen_tree.py --project . --output docs/STRUCTURE.md
+python <ogen-ai>/skills/repo_tree/gen_tree.py --project . --output README.md --max-depth 1
+```
+
+---
+
 ## Example report
 
 ```
