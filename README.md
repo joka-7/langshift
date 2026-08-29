@@ -232,6 +232,44 @@ cd frontend && npm run build   # outputs to frontend/dist
 repo-translate-ui               # now also serves the built UI at /
 ```
 
+### Screenshots
+
+The screenshots below walk through a real run — translating the sample fixture
+under `frontend/e2e/fixtures/ts_repo` from TypeScript to Python with the free
+`offline` provider, no API key involved.
+
+**Translate form** — pick the repo, language pair, provider/model, and options
+(translate manifests, score confidence, run tests after, resume, cross-file
+context):
+
+![Translate form with input path, language pair, provider, and options](docs/screenshots/translate-form.png)
+
+**Cost estimate** — file/manifest counts and an approximate token count before
+you commit to a run; free and instant for the offline provider:
+
+![Cost estimate showing token counts and price](docs/screenshots/cost-estimate.png)
+
+**Report** — per-run totals (translated/failed/skipped/needs-review) and the
+output file tree:
+
+![Translation report with totals and an output file tree](docs/screenshots/report.png)
+
+**Output browser** — source and translated code side by side for any file in
+the run:
+
+![Output browser showing TypeScript source next to translated Python](docs/screenshots/output-browser.png)
+
+**History** — every past run, with a link back into its report:
+
+![History table listing a past translation run](docs/screenshots/history.png)
+
+To regenerate these images locally:
+
+```bash
+cd frontend
+npx playwright test e2e/screenshots.spec.ts
+```
+
 ---
 
 ## Testing
