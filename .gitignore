@@ -8,3 +8,15 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
 *.egg-info/
+
+# ai-sync generated skill trees. The rule files it also generates (AGENTS.md,
+# CLAUDE.md, GEMINI.md, .github/copilot-instructions.md) ARE committed — CI and
+# Vercel builds never initialize the .ai submodule, so those have to resolve
+# without it. These directories are different: nothing in a build reads them,
+# they are four identical copies of the same ~250KB, and `python .ai/bin/ai-sync`
+# regenerates them on demand.
+.claude/skills/
+.claude/commands/
+.agents/skills/
+.cursor/skills/
+.github/skills/
