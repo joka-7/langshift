@@ -7,3 +7,4 @@ frontend/e2e/fixtures/*_python/
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
+*.egg-info/
