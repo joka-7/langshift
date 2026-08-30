@@ -1,3 +1,0 @@
-[console_scripts]
-repo-translate = repo_translator.cli:main
-repo-translate-ui = repo_translator.webui.main:run
