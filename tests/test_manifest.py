@@ -4,7 +4,6 @@ Tests for repo_translator.manifest
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -265,14 +264,6 @@ class TestValidateManifest:
 
     def test_invalid_cargo_toml_fails(self):
         error = _validate_manifest("Cargo.toml", "[package\nname = x")
-        if sys.version_info < (3, 11):
-            # tomllib is 3.11+. manifest.py deliberately degrades to "no TOML
-            # validation" rather than taking on a `tomli` backport dependency
-            # (see its import guard), and pyproject still declares >=3.10 — so
-            # on 3.10 the contract is that malformed TOML passes through
-            # unvalidated, not that it's caught.
-            assert error is None
-            return
         assert error is not None
         assert "TOML" in error
 

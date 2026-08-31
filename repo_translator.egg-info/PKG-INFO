@@ -1,3 +1,37 @@
+Metadata-Version: 2.4
+Name: repo-translator
+Version: 0.1.0
+Summary: Translate a code repository from one programming language to another using Claude AI
+License: MIT
+Project-URL: Homepage, https://github.com/your-username/repo-translator
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: anthropic>=0.50.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-mock>=3.12; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Requires-Dist: httpx>=0.27; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Requires-Dist: setuptools>=83.0.0; extra == "dev"
+Provides-Extra: webui
+Requires-Dist: fastapi>=0.110; extra == "webui"
+Requires-Dist: uvicorn[standard]>=0.29; extra == "webui"
+Provides-Extra: openai
+Requires-Dist: openai>=1.0; extra == "openai"
+Provides-Extra: gemini
+Requires-Dist: google-generativeai>=0.5; extra == "gemini"
+Provides-Extra: ollama
+Requires-Dist: ollama>=0.1; extra == "ollama"
+Provides-Extra: groq
+Requires-Dist: groq>=0.9; extra == "groq"
+Provides-Extra: all-providers
+Requires-Dist: openai>=1.0; extra == "all-providers"
+Requires-Dist: google-generativeai>=0.5; extra == "all-providers"
+Requires-Dist: ollama>=0.1; extra == "all-providers"
+Requires-Dist: groq>=0.9; extra == "all-providers"
+
 # langshift 🔄
 
 Translate an entire code repository from one programming language to another using Claude AI.
@@ -72,46 +106,6 @@ repo-translate --input ./my-repo --from ts --to python --provider claude --model
 
 Install the SDK for the provider(s) you use: `pip install -e ".[all-providers]"` pulls in all of them, or `pip install -e ".[webui]"` for just the web UI's deps.
 
-### Backend: native vs. model-dispatcher
-
-By default (`--backend native`), `claude`/`openai`/`gemini`/`groq` call the vendor SDK directly
-and this repo's own `repo_translator/providers/retry.py` handles rate-limit backoff — nothing
-here changes unless you opt in.
-
-`--backend model-dispatcher` (or `$LANGSHIFT_BACKEND=model-dispatcher`) routes those same four
-providers through [ModelDispatcher](https://github.com/joka-7/ModelDispatcher) instead — the
-shared gateway this project's other apps (AppMyTrip, HighFive, JobFlowTracker, KanDOne,
-StepByLearn) are standardising their own LLM calls on, so retry/backoff behaviour stays
-identical across all of them instead of drifting in separate implementations. `ollama`,
-`openai-compat`, and `offline` always run natively — ModelDispatcher has no equivalent for
-any of them yet.
-
-```bash
-pip install -e ".[model-dispatcher]"   # requires Python >=3.11 — see note below
-repo-translate --input ./my-repo --from ts --to python --provider claude --backend model-dispatcher
-```
-
-> **Requires Python ≥3.11.** ModelDispatcher itself needs it, which is newer than this repo's
-> own minimum (3.10) — though it's the same version this repo's own CI already runs on.
-> `pip install ".[model-dispatcher]"` fails clearly with a Python-version error if you're on
-> 3.10 — everything else in this repo still works fine either way.
-
-### When a file's translation fails: a free external-AI fallback
-
-If a file exhausts every retry (rate limit, API outage, no API key configured, etc.), it's
-marked `failed` — but the run doesn't just leave you with an error message. The report also
-includes deep links straight into free public AI chat products (ChatGPT, Claude, Gemini's
-Google AI Mode, Groq), each pre-filled with a plain-English version of that file's translation
-request, so there's still a concrete next step even when every configured provider is down.
-
-This is the CLI analogue of the `openExternalChat` escape hatch in
-`@joka-7/modeldispatcher-browser-agent`, the shared package this project's browser-based sibling
-apps use for the same purpose — reimplemented here in `repo_translator/providers/external_chat.py`
-since LangShift is a terminal tool, not a browser page: with `--verbose`, the links are printed
-straight to the terminal (most modern terminals turn a printed `http(s)` URL into something
-clickable on their own); either way they're saved into `translation_report.json`
-(`files[].external_chat_urls`) and `translation_report.md` for every failed file.
-
 ---
 
 ## Installation
@@ -152,14 +146,6 @@ repo-translate --input ./my-repo --from ts --to python --no-report
 # Also run the translated test suite
 repo-translate --input ./my-repo --from ts --to python --run-tests
 
-# Resume an interrupted run — skips files already completed last time
-# (reads .translation_state.json from the output dir; on by default, use --no-resume to disable)
-repo-translate --input ./my-repo --from ts --to python --resume
-
-# Give every file's prompt a read-only map of the other files' top-level symbols,
-# to help keep cross-file imports/calls consistent (off by default — bigger prompts)
-repo-translate --input ./my-repo --from ts --to python --cross-file-context
-
 # All flags
 repo-translate \
   --input     ./my-repo   \
@@ -170,12 +156,9 @@ repo-translate \
   --model     sonnet      \
   --base-url  https://... \
   --api-key   sk-ant-...  \
-  --run-tests             \
   --no-manifest           \
   --no-confidence         \
   --no-report             \
-  --no-resume             \
-  --cross-file-context    \
   --quiet
 ```
 
@@ -232,44 +215,6 @@ cd frontend && npm run build   # outputs to frontend/dist
 repo-translate-ui               # now also serves the built UI at /
 ```
 
-### Screenshots
-
-The screenshots below walk through a real run — translating the sample fixture
-under `frontend/e2e/fixtures/ts_repo` from TypeScript to Python with the free
-`offline` provider, no API key involved.
-
-**Translate form** — pick the repo, language pair, provider/model, and options
-(translate manifests, score confidence, run tests after, resume, cross-file
-context):
-
-![Translate form with input path, language pair, provider, and options](docs/screenshots/translate-form.png)
-
-**Cost estimate** — file/manifest counts and an approximate token count before
-you commit to a run; free and instant for the offline provider:
-
-![Cost estimate showing token counts and price](docs/screenshots/cost-estimate.png)
-
-**Report** — per-run totals (translated/failed/skipped/needs-review) and the
-output file tree:
-
-![Translation report with totals and an output file tree](docs/screenshots/report.png)
-
-**Output browser** — source and translated code side by side for any file in
-the run:
-
-![Output browser showing TypeScript source next to translated Python](docs/screenshots/output-browser.png)
-
-**History** — every past run, with a link back into its report:
-
-![History table listing a past translation run](docs/screenshots/history.png)
-
-To regenerate these images locally:
-
-```bash
-cd frontend
-npx playwright test e2e/screenshots.spec.ts
-```
-
 ---
 
 ## Testing
@@ -290,35 +235,6 @@ npm run test:e2e                # Playwright, drives a real browser against the 
 Every PR runs the same checks in CI (`.github/workflows/ci.yml`) plus a security gate
 (`.github/workflows/security.yml`): `pip-audit`, `npm audit`, `bandit`, ESLint security
 rules, `gitleaks`, and CodeQL.
-
----
-
-## Repo structure
-
-<!-- BEGIN GENERATED TREE (depth=1 entries=all) -->
-```text
-langshift/
-├── .github/
-├── .idea/
-├── docs/
-├── frontend/                  # React + Vite + TypeScript web UI, talking to repo_translator/webui's API
-├── repo_translator/           # The CLI/agent package — providers, offline mode, report generation
-├── repo_translator.egg-info/  # Build metadata (setuptools) — not hand-maintained
-├── tests/                     # Pytest suite for repo_translator (agent, CLI, providers, offline mode)
-├── .gitignore
-├── CLAUDE.md                  # CLAUDE.md — repo-translator
-├── README.md                  # Langshift 🔄
-├── pyproject.toml
-└── uv.lock
-```
-<!-- END GENERATED TREE -->
-
-Full annotated tree, every file: [`docs/STRUCTURE.md`](docs/STRUCTURE.md). Generated —
-regenerate after adding/renaming a file with:
-```bash
-python <ogen-ai>/skills/repo_tree/gen_tree.py --project . --output docs/STRUCTURE.md
-python <ogen-ai>/skills/repo_tree/gen_tree.py --project . --output README.md --max-depth 1
-```
 
 ---
 
