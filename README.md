@@ -301,13 +301,18 @@ langshift/
 ├── .github/
 ├── .idea/
 ├── docs/
-├── frontend/                  # React + Vite + TypeScript web UI, talking to repo_translator/webui's API
-├── repo_translator/           # The CLI/agent package — providers, offline mode, report generation
-├── repo_translator.egg-info/  # Build metadata (setuptools) — not hand-maintained
-├── tests/                     # Pytest suite for repo_translator (agent, CLI, providers, offline mode)
+├── frontend/           # React + Vite + TypeScript web UI, talking to repo_translator/webui's API
+├── repo_translator/    # The CLI/agent package — providers, offline mode, report generation
+├── tests/              # Pytest suite for repo_translator (agent, CLI, providers, offline mode)
+├── .ai                 # Ogen-ai submodule — the shared source of rules, skills and the ai-sync…
 ├── .gitignore
-├── CLAUDE.md                  # CLAUDE.md — repo-translator
-├── README.md                  # Langshift 🔄
+├── .gitmodules
+├── AGENTS.md           # The compiled coding rules every AI assistant reads — generated, do not…
+├── CLAUDE.md           # Claude Code's copy of AGENTS.md (generated)
+├── GEMINI.md           # Gemini CLI's copy of AGENTS.md (generated)
+├── README.md           # Langshift 🔄
+├── ai-config.local.md  # Project-specific rules appended verbatim to the generated AGENTS.md
+├── ai-config.toml      # Which rule fragments and target tools ai-sync compiles for this repo
 ├── pyproject.toml
 └── uv.lock
 ```
@@ -316,8 +321,8 @@ langshift/
 Full annotated tree, every file: [`docs/STRUCTURE.md`](docs/STRUCTURE.md). Generated —
 regenerate after adding/renaming a file with:
 ```bash
-python <ogen-ai>/skills/repo_tree/gen_tree.py --project . --output docs/STRUCTURE.md
-python <ogen-ai>/skills/repo_tree/gen_tree.py --project . --output README.md --max-depth 1
+python .ai/skills/repo_tree/gen_tree.py --project . --output docs/STRUCTURE.md
+python .ai/skills/repo_tree/gen_tree.py --project . --output README.md --max-depth 1
 ```
 
 ---

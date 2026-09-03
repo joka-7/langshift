@@ -9,11 +9,11 @@ jobs:
   python-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install package + dev/webui deps
         run: pip install -e ".[dev,webui]"
@@ -26,12 +26,20 @@ jobs:
 
   python-unit-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python >=3.10, so 3.10 is part of
+        # the contract and has to be tested — the tomllib fallback in
+        # manifest.py only runs there. 3.12 is what everything else in
+        # the portfolio runs.
+        python-version: ["3.10", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install package + dev/webui deps
         run: pip install -e ".[dev,webui]"
@@ -41,12 +49,20 @@ jobs:
 
   python-integration-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python >=3.10, so 3.10 is part of
+        # the contract and has to be tested — the tomllib fallback in
+        # manifest.py only runs there. 3.12 is what everything else in
+        # the portfolio runs.
+        python-version: ["3.10", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install package + dev/webui deps
         run: pip install -e ".[dev,webui]"
@@ -57,11 +73,11 @@ jobs:
   python-coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install package + dev/webui deps
         run: pip install -e ".[dev,webui]"
@@ -81,9 +97,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # jsdom 30 (a vitest dev dependency) requires Node >=22.22.2; Node 20
           # doesn't just warn on this — it hard-crashes at runtime inside
@@ -103,16 +119,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [python-lint, python-unit-tests, python-integration-tests, python-coverage, frontend-checks]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install package + webui deps
         run: pip install -e ".[webui]"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # jsdom 30 (a vitest dev dependency) requires Node >=22.22.2; Node 20
           # doesn't just warn on this — it hard-crashes at runtime inside
@@ -136,7 +152,7 @@ jobs:
 
       - name: Upload Playwright report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report
           path: frontend/playwright-report/
