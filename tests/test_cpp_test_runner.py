@@ -1,0 +1,173 @@
+"""Unit tests for the C++ test runner module."""
+
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from repo_translator.cpp_test_runner import (
+    _find_compiler,
+    _run_with_cmake,
+    _run_with_direct_compilation,
+    run_cpp_tests,
+)
+
+
+class TestFindCompiler:
+    """Tests for _find_compiler."""
+
+    def test_find_compiler_success(self) -> None:
+        """Should return compiler if found."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            result = _find_compiler()
+            assert result in ["g++", "clang++", "c++"]
+            assert mock_run.called
+
+    def test_find_compiler_not_found(self) -> None:
+        """Should return None if no compiler found."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            result = _find_compiler()
+            assert result is None
+
+
+class TestRunWithCMake:
+    """Tests for _run_with_cmake."""
+
+    def test_cmake_success(self) -> None:
+        """Should return 0 when CMake and ctest succeed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            with patch("subprocess.run") as mock_run:
+                # CMake config, build, and ctest all succeed
+                mock_run.return_value = MagicMock(
+                    returncode=0, stdout="tests passed", stderr=""
+                )
+                result = _run_with_cmake(work_dir)
+                assert result == 0
+                # Should call cmake and ctest
+                assert mock_run.call_count >= 3
+
+    def test_cmake_config_fails(self) -> None:
+        """Should return 1 when CMake configuration fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=1, stdout="", stderr="CMake error"
+                )
+                with patch("builtins.print"):  # Suppress output
+                    result = _run_with_cmake(work_dir)
+                    assert result == 1
+
+    def test_cmake_not_found(self) -> None:
+        """Should return 1 when CMake is not found."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            with patch("subprocess.run") as mock_run:
+                mock_run.side_effect = FileNotFoundError("cmake not found")
+                with patch("builtins.print"):  # Suppress output
+                    result = _run_with_cmake(work_dir)
+                    assert result == 1
+
+
+class TestRunWithDirectCompilation:
+    """Tests for _run_with_direct_compilation."""
+
+    def test_no_test_files(self) -> None:
+        """Should return 1 when no test files are found."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            with patch("builtins.print"):  # Suppress output
+                result = _run_with_direct_compilation(work_dir)
+                assert result == 1
+
+    def test_compilation_success(self) -> None:
+        """Should return 0 when compilation and tests succeed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            # Create a test file matching the pattern
+            test_file = work_dir / "example_test.cpp"
+            test_file.write_text("int main() { return 0; }")
+
+            with patch("repo_translator.cpp_test_runner._find_compiler") as mock_find:
+                mock_find.return_value = "g++"
+                with patch("subprocess.run") as mock_run:
+                    # Compilation succeeds, test runs and passes
+                    mock_run.return_value = MagicMock(
+                        returncode=0, stdout="tests passed", stderr=""
+                    )
+                    result = _run_with_direct_compilation(work_dir)
+                    assert result == 0
+
+    def test_compilation_fails(self) -> None:
+        """Should return 1 when compilation fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            # Create a test file matching the pattern
+            test_file = work_dir / "example_test.cpp"
+            test_file.write_text("int main() { return 0; }")
+
+            with patch("repo_translator.cpp_test_runner._find_compiler") as mock_find:
+                mock_find.return_value = "g++"
+                with patch("subprocess.run") as mock_run:
+                    # Compilation fails
+                    mock_run.return_value = MagicMock(
+                        returncode=1, stdout="", stderr="compilation error"
+                    )
+                    with patch("builtins.print"):  # Suppress output
+                        result = _run_with_direct_compilation(work_dir)
+                        assert result == 1
+
+    def test_test_execution_fails(self) -> None:
+        """Should return 1 when test execution fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            # Create a test file matching the pattern
+            test_file = work_dir / "example_test.cpp"
+            test_file.write_text("int main() { return 0; }")
+
+            with patch("repo_translator.cpp_test_runner._find_compiler") as mock_find:
+                mock_find.return_value = "g++"
+                with patch("subprocess.run") as mock_run:
+                    # First call (compilation) succeeds, second call (test run) fails
+                    mock_run.side_effect = [
+                        MagicMock(returncode=0, stdout="", stderr=""),
+                        MagicMock(returncode=1, stdout="", stderr="test failed"),
+                    ]
+                    with patch("builtins.print"):  # Suppress output
+                        result = _run_with_direct_compilation(work_dir)
+                        assert result == 1
+
+
+class TestRunCppTests:
+    """Tests for run_cpp_tests (main entry point)."""
+
+    def test_with_cmake(self) -> None:
+        """Should use CMake if CMakeLists.txt exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            # Create CMakeLists.txt
+            (work_dir / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.10)")
+
+            with patch("repo_translator.cpp_test_runner._run_with_cmake") as mock_cmake:
+                mock_cmake.return_value = 0
+                result = run_cpp_tests(work_dir)
+                assert result == 0
+                mock_cmake.assert_called_once()
+
+    def test_without_cmake(self) -> None:
+        """Should use direct compilation if CMakeLists.txt doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            with patch(
+                "repo_translator.cpp_test_runner._run_with_direct_compilation"
+            ) as mock_direct:
+                mock_direct.return_value = 0
+                result = run_cpp_tests(work_dir)
+                assert result == 0
+                mock_direct.assert_called_once()

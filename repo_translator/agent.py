@@ -110,7 +110,7 @@ LANGUAGE_META: dict[str, dict] = {
         "extensions": [".cpp", ".cc", ".cxx", ".h", ".hpp"],
         "runner": None,
         "test_patterns": ["_test.cpp", "Test.cpp"],
-        "test_runner": None,
+        "test_runner": ["python3", "-m", "repo_translator.cpp_test_runner"],
     },
     "c": {
         "aliases": [],
@@ -128,6 +128,8 @@ TEST_FRAMEWORK_MAP: dict[tuple[str, str], str] = {
     ("go",         "python"): "pytest",
     ("java",       "python"): "pytest",
     ("ruby",       "python"): "pytest",
+    ("cpp",        "python"): "pytest",
+    ("c",          "python"): "pytest",
     ("python", "javascript"): "jest",
     ("python", "typescript"): "jest",
     ("python",       "go"):   "Go testing package (testing.T)",

@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from repo_translator.offline import ts_to_py
+from repo_translator.offline import cpp_to_py, ts_to_py
 
 _REGISTRY: dict[str, Callable[[str], str]] = {
     "typescript:python": ts_to_py.transform,
     "javascript:python": ts_to_py.transform,   # JS is a TS subset
+    "cpp:python": cpp_to_py.transform,
+    "c:python": cpp_to_py.transform,           # C shares many patterns with C++
 }
 
 
