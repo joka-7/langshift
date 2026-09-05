@@ -1,0 +1,34 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tree-drift:
+    name: Generated trees are current
+    runs-on: ubuntu-latest
+    steps:
+      # docs/STRUCTURE.md and the README's summary tree are generated from the
+      # real repository. A directory map that nothing verifies drifts silently
+      # and ends up actively misleading -- it says which file to open, so being
+      # wrong is worse than being absent. This fails the build when either
+      # committed tree no longer matches the files on disk.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The generator lives in the .ai submodule. ogen-ai is public, so this
+          # needs no credentials.
+          submodules: true
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the generated trees against the repository
+        run: |
+          python .ai/skills/repo_tree/gen_tree.py --project . --output docs/STRUCTURE.md --check
+          python .ai/skills/repo_tree/gen_tree.py --project . --output README.md --max-depth 1 --check
