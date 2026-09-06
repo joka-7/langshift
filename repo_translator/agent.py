@@ -579,6 +579,11 @@ def _score_confidence(
         return 50, "confidence scoring failed"
 
 
+# Recorded as a file's run_output when execute=False, so a report makes clear the
+# translation was never validated by running it rather than silently passing.
+_NOT_EXECUTED_NOTE = "(execution disabled — translated code was not run)"
+
+
 def _try_run(to_lang: str, code: str) -> tuple[bool, str]:
     runner = LANGUAGE_META[to_lang].get("runner")
     if runner is None:
@@ -879,6 +884,7 @@ def translate_repo(
     score_confidence: bool = True,
     resume: bool = True,
     cross_file_context: bool = False,
+    execute: bool = True,
     on_progress: Callable[[dict], None] | None = None,
 ) -> TranslationReport:
     """
@@ -891,6 +897,13 @@ def translate_repo(
       {"type": "tests_done", "passed": bool}
       {"type": "finished", "summary": dict}
     Consumers (e.g. the web UI) use this to stream live progress; the CLI doesn't pass it.
+
+    execute: if False, translated code is never handed to an interpreter --
+    the per-file auto-run is skipped (so the auto-fix loop has no error to
+    feed back, and every file is accepted on its first attempt) and the
+    test-suite run is suppressed even when run_tests_after is True, since
+    running a test suite executes translated code too. Output quality drops:
+    nothing validates that what the model wrote actually runs.
 
     resume: if True (the default) and output_path already holds a checkpoint
     (.translation_state.json) from a previous run of this exact repo_path/
@@ -1028,7 +1041,10 @@ def translate_repo(
                        "status": "failed", "attempts": attempt, "confidence": None})
                 break
 
-            ok, run_output = _try_run(to_lang, translated_code)
+            if execute:
+                ok, run_output = _try_run(to_lang, translated_code)
+            else:
+                ok, run_output = True, _NOT_EXECUTED_NOTE
             final_code = translated_code
             run_ok     = ok
 
@@ -1097,7 +1113,7 @@ def translate_repo(
     # file names (test_patterns == [], e.g. rust's `cargo test`) has no way
     # to report test_files, so it must not be gated on that list being non-empty.
     to_test_patterns = LANGUAGE_META[to_lang].get("test_patterns", [])
-    if run_tests_after and (test_files or not to_test_patterns):
+    if execute and run_tests_after and (test_files or not to_test_patterns):
         passed, test_output = _run_tests_with_retry(
             provider, repo_path, output_path, from_lang, to_lang,
             test_files, verbose, on_progress, repo_map=repo_map,

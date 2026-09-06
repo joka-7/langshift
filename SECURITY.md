@@ -41,9 +41,14 @@ There is no sandbox. Two consequences worth being explicit about:
    injection can influence what gets generated — and therefore what gets
    executed. Do not point langshift at a repository you would not run.
 
-If that is not acceptable for your input, run langshift in a container or VM, or
-drop `--run-tests` and use `--provider offline`, which is pure rule-based
-rewriting (`repo_translator/offline/`) and calls no model at all.
+If that is not acceptable for your input, pass `--no-run` (`execute=False` on
+`translate_repo()`, `"execute": false` on `POST /api/jobs`). It skips the
+per-file auto-run and suppresses the test-suite run, so nothing generated is
+executed; the CLI rejects `--no-run --run-tests` rather than quietly honouring
+one of them. The cost is quality — the auto-fix loop has no runtime error to
+learn from. For no execution *and* no network, add `--provider offline`, which
+is pure rule-based rewriting (`repo_translator/offline/`) and calls no model at
+all. Running in a container or VM remains the stronger boundary.
 
 ### The web UI is localhost-only, and depends on staying that way
 

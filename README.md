@@ -25,8 +25,10 @@ not what it can do. Treat the repositories you translate as untrusted: their
 contents go into the prompt, so they can influence what gets generated and
 therefore what gets executed.
 
-Run it on code you trust, or run it in a container or VM. To translate with no
-execution and no network at all, use `--provider offline` without `--run-tests`.
+Pass `--no-run` to turn execution off entirely: files are translated and written,
+but never executed, so the auto-fix loop has nothing to feed back and quality
+drops. Otherwise run it on code you trust, or in a container or VM. For no
+execution *and* no network, combine `--no-run` with `--provider offline`.
 
 See [SECURITY.md](SECURITY.md) for the full threat model, including the web UI's
 localhost-only assumptions.
@@ -170,6 +172,9 @@ repo-translate --input ./my-repo --from ts --to python --no-manifest
 
 # Skip report
 repo-translate --input ./my-repo --from ts --to python --no-report
+
+# Never execute the translated code (no auto-run, no auto-fix, no test run)
+repo-translate --input ./my-repo --from ts --to python --no-run
 
 # Also run the translated test suite
 repo-translate --input ./my-repo --from ts --to python --run-tests

@@ -78,6 +78,7 @@ class TranslateRequest(BaseModel):
     score_confidence: bool = True
     resume: bool = False
     cross_file_context: bool = False
+    execute: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,7 @@ def post_job(req: TranslateRequest):
             score_confidence=req.score_confidence,
             resume=req.resume,
             cross_file_context=req.cross_file_context,
+            execute=req.execute,
         )
     except jobs.JobError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
