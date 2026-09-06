@@ -336,6 +336,7 @@ langshift/
 ├── .gitmodules
 ├── AGENTS.md           # The compiled coding rules every AI assistant reads — generated, do not…
 ├── CLAUDE.md           # Claude Code's copy of AGENTS.md (generated)
+├── CONTRIBUTING.md     # Setup, the exact checks CI runs, and the house rules for a PR
 ├── GEMINI.md           # Gemini CLI's copy of AGENTS.md (generated)
 ├── LICENSE             # MIT — the licence pyproject.toml's [project] table declares
 ├── README.md           # Langshift 🔄
@@ -380,7 +381,12 @@ python .ai/skills/repo_tree/gen_tree.py --project . --output README.md --max-dep
 
 ## Contributing
 
-PRs welcome! Ideas for next steps:
-- `--test` flag to run existing test suites post-translation
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the exact
+checks CI runs (none of them need an API key).
+
+Ideas for next steps:
+- Test runners for the remaining compiled languages — Java, Kotlin and C# still
+  have `test_runner: None`, and so does plain `c`
 - Interactive mode with confirmation per file
-- Support for monorepos with mixed languages
+- Support for monorepos with mixed languages (`collect_files()` handles one
+  source language at a time)

@@ -565,8 +565,15 @@ def _score_confidence(
         {{"score": <0-100>, "reason": "<one sentence>"}}
     """).strip()
 
+    # Scoring is advisory -- a failure here must never sink an otherwise good
+    # translation -- but the two ways it fails are different, and the reason is
+    # reported rather than collapsed into a bare 50 the reader can't explain.
     try:
         raw = complete_with_backoff(provider, prompt, max_tokens=256).strip()
+    except Exception as e:  # provider/SDK errors are an open set
+        return 50, f"confidence scoring failed: {type(e).__name__}"
+
+    try:
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -574,9 +581,12 @@ def _score_confidence(
         data   = json.loads(raw.strip())
         score  = max(0, min(100, int(data["score"])))
         reason = str(data.get("reason", ""))[:200]
-        return score, reason
-    except Exception:
-        return 50, "confidence scoring failed"
+    except (IndexError, KeyError, TypeError, ValueError) as e:
+        # json.JSONDecodeError subclasses ValueError, as does int() on a
+        # non-numeric string. Anything outside this set is a bug in the block
+        # above, and should surface rather than be reported as a score of 50.
+        return 50, f"confidence scoring failed: unparsable response ({type(e).__name__})"
+    return score, reason
 
 
 # Recorded as a file's run_output when execute=False, so a report makes clear the

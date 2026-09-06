@@ -121,6 +121,7 @@ langshift/
 ├── .gitmodules
 ├── AGENTS.md                              # The compiled coding rules every AI assistant reads — generated, do not…
 ├── CLAUDE.md                              # Claude Code's copy of AGENTS.md (generated)
+├── CONTRIBUTING.md                        # Setup, the exact checks CI runs, and the house rules for a PR
 ├── GEMINI.md                              # Gemini CLI's copy of AGENTS.md (generated)
 ├── LICENSE                                # MIT — the licence pyproject.toml's [project] table declares
 ├── README.md                              # Langshift 🔄

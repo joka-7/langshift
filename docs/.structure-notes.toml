@@ -28,5 +28,6 @@
 "ai-config.toml" = "Which rule fragments and target tools ai-sync compiles for this repo"
 "LICENSE" = "MIT — the licence pyproject.toml's [project] table declares"
 "SECURITY.md" = "Threat model (it executes generated code) and how to report a vulnerability"
+"CONTRIBUTING.md" = "Setup, the exact checks CI runs, and the house rules for a PR"
 "ai-config.local.md" = "Project-specific rules appended verbatim to the generated AGENTS.md"
 ".ai" = "ogen-ai submodule — the shared source of rules, skills and the ai-sync generator"

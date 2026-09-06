@@ -64,8 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Base URL for openai-compat provider "
                              "(e.g. https://api.together.xyz/v1, https://openrouter.ai/api/v1)")
     parser.add_argument("--api-key",  metavar="KEY", default=None,
-                        help="API key (env vars: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-                             "GEMINI_API_KEY, GROQ_API_KEY, OPENAI_COMPAT_API_KEY)")
+                        help="API key. Prefer the environment (ANTHROPIC_API_KEY, "
+                             "OPENAI_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, "
+                             "OPENAI_COMPAT_API_KEY): a key passed here is visible to "
+                             "anyone who can list processes, and lands in your shell "
+                             "history.")
     parser.add_argument("--backend", default=DEFAULT_BACKEND,
                         choices=list(SUPPORTED_BACKENDS),
                         help="Completion backend (default: "

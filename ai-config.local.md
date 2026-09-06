@@ -19,6 +19,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 repo-translate --input ./my-ts-repo --from ts --to python
 repo-translate --input ./my-repo --from ts --to python --run-tests  # also run translated tests
 repo-translate --input ./my-ts-repo --from ts --to python --provider offline  # no API key needed
+repo-translate --input ./my-repo --from ts --to python --no-run  # never execute translated code
 pytest         # full suite (unit + integration)
 pytest -m "not integration"   # fast lane only — mocked providers, no subprocesses/threads
 ruff check .   # lint
@@ -75,6 +76,7 @@ tests/
 ├── test_cpp_offline.py — unit tests for the offline cpp/c→py transformer
 ├── test_cpp_test_runner.py — unit tests for cpp_test_runner.py (subprocess mocked)
 ├── test_providers.py— unit tests, one class per provider, SDKs mocked via sys.modules
+├── test_model_dispatcher_provider.py — unit tests for the model-dispatcher backend
 ├── test_retry.py    — unit tests for the backoff/retry wrapper (time.sleep always mocked)
 ├── test_report.py   — unit tests
 ├── test_external_chat.py — unit tests for the free-AI-chat fallback URL builders
