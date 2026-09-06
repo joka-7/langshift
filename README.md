@@ -25,7 +25,8 @@ not what it can do. Treat the repositories you translate as untrusted: their
 contents go into the prompt, so they can influence what gets generated and
 therefore what gets executed.
 
-Pass `--no-run` to turn execution off entirely: files are translated and written,
+**This is on by default.** Every run executes what it translates unless you pass
+`--no-run`, which turns execution off entirely: files are translated and written
 but never executed, so the auto-fix loop has nothing to feed back and quality
 drops. Otherwise run it on code you trust, or in a container or VM. For no
 execution *and* no network, combine `--no-run` with `--provider offline`.
@@ -168,7 +169,8 @@ repo-translate --input ./my-repo --from ts --to python --provider offline   # fr
 repo-translate --input ./my-repo --from go --to python --output ./translated
 
 # In place: write translated files beside their sources, in the same folders
-# (src/main.ts → src/main.py) instead of a separate output directory
+# (src/main.ts → src/main.py). Off by default — without it, output goes to a
+# sibling directory (./my-repo → ./my-repo_python)
 repo-translate --input ./my-repo --from ts --to python --in-place
 
 # Skip manifest translation
@@ -177,7 +179,8 @@ repo-translate --input ./my-repo --from ts --to python --no-manifest
 # Skip report
 repo-translate --input ./my-repo --from ts --to python --no-report
 
-# Never execute the translated code (no auto-run, no auto-fix, no test run)
+# Never execute the translated code (no auto-run, no auto-fix, no test run).
+# Execution is ON by default — this is the only way to turn it off.
 repo-translate --input ./my-repo --from ts --to python --no-run
 
 # Also run the translated test suite
@@ -191,14 +194,18 @@ repo-translate --input ./my-repo --from ts --to python --resume
 # to help keep cross-file imports/calls consistent (off by default — bigger prompts)
 repo-translate --input ./my-repo --from ts --to python --cross-file-context
 
-# All flags
+# Most flags at once. Not literally every flag: --no-run contradicts --run-tests
+# and --in-place contradicts --output, so no single command can show them all
+# (langshift exits 1 rather than silently picking one). `repo-translate --help`
+# is the authoritative list.
 repo-translate \
   --input     ./my-repo   \
   --from      ts          \
   --to        python      \
   --output    ./out       \
-  --provider  claude       \
+  --provider  claude      \
   --model     sonnet      \
+  --backend   native      \
   --base-url  https://... \
   --api-key   sk-ant-...  \
   --run-tests             \
@@ -209,6 +216,11 @@ repo-translate \
   --cross-file-context    \
   --quiet
 ```
+
+Defaults worth knowing: the translated code **is executed** (`--no-run` to stop
+it), output goes to a **sibling directory** (`--in-place` to write beside the
+sources), `--resume` is **on**, and `--run-tests` and `--cross-file-context` are
+**off**.
 
 ---
 
