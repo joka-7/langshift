@@ -11,30 +11,14 @@ The agent:
 
 ---
 
-## ⚠️ Before you run it: langshift executes the code the model writes
-
-The auto-fix loop works by *running* each translated file and feeding the error
-back to the model, so translation and execution are the same step. `_try_run()`
-executes every translated file with the target language's interpreter, and
-`--run-tests` runs the target's test runner over the output — which for some
-languages runs project-defined scripts of its own (`npm test`, `cargo test`).
-
-There is no sandbox. It runs as you, with your filesystem, network and
-credentials. Timeouts (15s per file, 120s per test run) bound how long it runs,
-not what it can do. Treat the repositories you translate as untrusted: their
-contents go into the prompt, so they can influence what gets generated and
-therefore what gets executed.
-
-**This is on by default.** Every run executes what it translates unless you pass
-`--no-run`, which turns execution off entirely: files are translated and written
-but never executed, so the auto-fix loop has nothing to feed back and quality
-drops. Otherwise run it on code you trust, or in a container or VM. For no
-execution *and* no network, combine `--no-run` with `--provider offline`.
-
-See [SECURITY.md](SECURITY.md) for the full threat model, including the web UI's
-localhost-only assumptions.
-
----
+> ### ⚠️ langshift runs the code it translates
+>
+> Auto-fixing means executing each translated file and feeding the error back to
+> the model, unsandboxed and as you. **On by default** — pass `--no-run` to
+> translate without executing anything (quality drops; the fix loop has nothing
+> to learn from). Run it on code you trust, or in a container.
+>
+> [SECURITY.md](SECURITY.md) has the full threat model.
 
 ## Supported languages
 
