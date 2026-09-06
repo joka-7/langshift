@@ -225,6 +225,35 @@ class TestFileEndpointSafety:
         assert resp.status_code == 400
 
 
+class TestCorsPolicy:
+    """
+    The API binds to 127.0.0.1, but "localhost only" is not a boundary a browser
+    enforces for *sending* — any page the user visits can POST to 127.0.0.1. What
+    stops it reading the reply is CORS. Since a caller picks a job's output_path
+    and /file then serves anything under it, echoing an arbitrary Origin would let
+    any website register output_path="/" and read files off the user's disk.
+    """
+
+    def test_rejects_arbitrary_origin(self, client):
+        resp = client.get("/api/languages", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 200
+        assert "access-control-allow-origin" not in {k.lower() for k in resp.headers}
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8765",
+            "http://127.0.0.1:8765",
+        ],
+    )
+    def test_allows_local_dev_origins(self, client, origin):
+        resp = client.get("/api/languages", headers={"Origin": origin})
+        assert resp.status_code == 200
+        assert resp.headers["access-control-allow-origin"] == origin
+
+
 # ─────────────────────────────────────────────
 # 404s and edge cases on /stream, /report, /tree, /file (main.py)
 # ─────────────────────────────────────────────
