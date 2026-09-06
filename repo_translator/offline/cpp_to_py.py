@@ -22,10 +22,9 @@ def transform(code: str) -> str:
     lines = code.splitlines()
     output: list[str] = []
     needed_imports: set[str] = set()
-    in_main = False
     indent_stack: list[int] = []
 
-    for i, line in enumerate(lines):
+    for line in lines:
         # Skip empty lines and comments
         if not line.strip():
             output.append("")
@@ -49,7 +48,6 @@ def transform(code: str) -> str:
 
         # Handle main function
         if re.search(r"int\s+main\s*\(", line):
-            in_main = True
             output.append('if __name__ == "__main__":')
             continue
 
@@ -131,7 +129,6 @@ _INCLUDE_MAP: dict[str, list[str]] = {
     "memory": [],  # Python has automatic memory management
     "utility": [],  # Various utilities
     "stdexcept": [],  # Use built-in exceptions
-    "iostream": ["import sys"],
 }
 
 
@@ -282,11 +279,13 @@ def _transform_var_declaration(line: str) -> str:
 
     # Simple regex to match: [const] type var [= value] [;]
     # Handle template types with nested brackets
-    match = re.match(r"(const\s+)?([\w:]+(?:<[^<>]*(?:<[^<>]*>[^<>]*)?>)?)\s+(\w+)\s*(?:=\s*(.+?))?;?$", stripped)
+    match = re.match(
+        r"(const\s+)?([\w:]+(?:<[^<>]*(?:<[^<>]*>[^<>]*)?>)?)\s+(\w+)\s*(?:=\s*(.+?))?;?$",
+        stripped,
+    )
     if not match:
         return line
 
-    is_const = match.group(1) is not None
     type_str = match.group(2)
     var_name = match.group(3)
     value = match.group(4)

@@ -1,12 +1,8 @@
 """Unit tests for the C++ test runner module."""
 
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from repo_translator.cpp_test_runner import (
     _find_compiler,

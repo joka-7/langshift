@@ -1,7 +1,5 @@
 """Unit tests for C++ → Python offline transformer."""
 
-import pytest
-
 from repo_translator.offline.cpp_to_py import (
     _extract_params,
     _handle_braces,
