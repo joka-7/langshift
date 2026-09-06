@@ -103,12 +103,6 @@ jobs:
         uses: github/codeql-action/autobuild@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
 
       - name: Perform CodeQL analysis
-        # Non-blocking until "Code scanning" is enabled in the repository
-        # settings: the analysis runs, but its SARIF upload step errors with
-        # "Code scanning is not enabled for this repository". continue-on-error
-        # on this step lets the job conclude successfully (green check) while
-        # still running the analysis. Once code scanning is enabled, remove this.
-        continue-on-error: true
         uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           category: "/language:${{ matrix.language }}"

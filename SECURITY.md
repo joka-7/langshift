@@ -101,7 +101,8 @@ Every PR runs `.github/workflows/security.yml`: `pip-audit`, `npm audit`
 (`--audit-level=high`), `bandit`, ESLint with `eslint-plugin-security`, a
 full-history `gitleaks` scan, and CodeQL for Python and JavaScript/TypeScript.
 
-CodeQL's upload step is currently `continue-on-error: true` because code scanning
-is not enabled on the repository — the analysis runs but cannot fail the build.
-Enabling code scanning in repository settings and removing that flag is what
-makes CodeQL an actual gate.
+CodeQL is a real gate: its analyze step carries no `continue-on-error`, so a
+failed analysis or a failed upload fails the job. That depends on code scanning
+staying enabled for the repository — if it is ever turned off, the upload starts
+erroring and the Security workflow goes red, which is the intended signal rather
+than something to paper over.
