@@ -5,10 +5,13 @@ from anthropic.types import TextBlock
 
 from repo_translator.providers.base import LLMProvider
 
+# Friendly alias -> exact model ID. IDs are complete as written; they take no
+# date suffix. `--model` also accepts a raw ID, so a model released after this
+# table was last touched needs no code change.
 CLAUDE_MODELS: dict[str, str] = {
-    "haiku":  "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
-    "opus":   "claude-opus-4-8",
+    "haiku":  "claude-haiku-4-5",
+    "sonnet": "claude-sonnet-5",
+    "opus":   "claude-opus-5",
 }
 
 

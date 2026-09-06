@@ -19,6 +19,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 repo-translate --input ./my-ts-repo --from ts --to python
 repo-translate --input ./my-repo --from ts --to python --run-tests  # also run translated tests
 repo-translate --input ./my-ts-repo --from ts --to python --provider offline  # no API key needed
+repo-translate --input ./my-repo --from ts --to python --no-run  # never execute translated code
 pytest         # full suite (unit + integration)
 pytest -m "not integration"   # fast lane only — mocked providers, no subprocesses/threads
 ruff check .   # lint
@@ -37,6 +38,9 @@ repo_translator/
 ├── manifest.py    — translates dependency files (package.json → requirements.txt etc.)
 ├── report.py      — TranslationReport dataclass, saves .json + .md summary
 ├── cli.py         — argparse CLI entry point
+├── cpp_test_runner.py — runs translated C++ tests, via CMake+ctest when there's a
+│                    CMakeLists.txt, else direct g++/clang++ compilation. Invoked as
+│                    a subprocess: it is cpp's `test_runner` in LANGUAGE_META.
 ├── providers/     — one module per LLM backend (claude, openai, gemini, groq, ollama,
 │                    openai_compat) plus base.py (LLMProvider ABC) and retry.py
 │                    (rate-limit-aware backoff wrapper used by both agent.py and manifest.py).
@@ -44,13 +48,15 @@ repo_translator/
 │                    (--backend model-dispatcher / $LANGSHIFT_BACKEND) routing
 │                    claude/openai/gemini/groq through the shared ModelDispatcher gateway
 │                    instead of this repo's own SDK calls + retry.py; requires the optional
-│                    `model-dispatcher` extra (Python >=3.11, private-repo git dependency) —
-│                    see README.md § "Backend: native vs. model-dispatcher".
+│                    `model-dispatcher` extra (public on PyPI since v0.3.0 — a normal
+│                    dependency, no git access or credentials needed) — see README.md
+│                    § "Backend: native vs. model-dispatcher".
 │                    external_chat.py builds the free-AI-chat deep links agent.py attaches to
 │                    a FileResult once a file fails every retry — see README.md § "When a
 │                    file's translation fails: a free external-AI fallback".
-├── offline/       — rule-based, LLM-free transformer (currently ts/js → python) used by the
-│                    `offline` provider; ts_to_py.py is the ~75%-coverage rewrite engine
+├── offline/       — rule-based, LLM-free transformers used by the `offline` provider:
+│                    ts_to_py.py (ts/js → python, ~75% coverage) and cpp_to_py.py
+│                    (cpp/c → python, ~70%); transformer.py is the pair registry
 └── webui/         — FastAPI backend for the web UI (jobs.py: background job manager +
                       JSON history; main.py: API routes incl. SSE progress streaming)
 
@@ -67,7 +73,10 @@ tests/
 ├── test_agent.py    — unit tests, mocked providers
 ├── test_manifest.py — unit tests, mocked providers
 ├── test_offline.py  — unit tests for the offline ts→py transformer
+├── test_cpp_offline.py — unit tests for the offline cpp/c→py transformer
+├── test_cpp_test_runner.py — unit tests for cpp_test_runner.py (subprocess mocked)
 ├── test_providers.py— unit tests, one class per provider, SDKs mocked via sys.modules
+├── test_model_dispatcher_provider.py — unit tests for the model-dispatcher backend
 ├── test_retry.py    — unit tests for the backoff/retry wrapper (time.sleep always mocked)
 ├── test_report.py   — unit tests
 ├── test_external_chat.py — unit tests for the free-AI-chat fallback URL builders
@@ -127,6 +136,9 @@ pyproject.toml — package config, entry points: repo-translate = repo_translato
 ### Supported languages (13 total)
 typescript, javascript, python, java, go, rust, ruby, csharp, php, kotlin, swift, cpp, c
 
+The `offline` provider covers only a subset as *source* languages — see
+`offline/transformer.py`'s `_REGISTRY` for the authoritative pair list.
+
 Each entry in `LANGUAGE_META` has: aliases, extensions, runner (for auto-run), test_patterns, test_runner.
 
 ---
@@ -159,9 +171,12 @@ still need no API key or network access.
    each prompt just gets this one extra read-only note. It's a regex heuristic, not a real
    parser, so treat it as a hint, not a guarantee.
 
-2. **Test runner for compiled languages** — Java, Kotlin, C#, C++ don't have auto-run support
-   yet. Their `test_runner` is `None`. Fix: add compile + run steps. (Rust's runner works;
-   see the `--run-tests` gating note above.)
+2. **Test runner for compiled languages** — Java, Kotlin and C# still have `test_runner`
+   set to `None`, so `--run-tests` can't run their suites. C++ is done: `cpp_test_runner.py`
+   compiles and runs them (CMake+ctest, else g++/clang++). Plain `c` is not — it shares the
+   offline transformer with cpp but its `test_runner` is still `None`. None of these five
+   has a single-file `runner` for the auto-fix loop either. (Rust's runner works; see the
+   `--run-tests` gating note above.)
 
 3. ~~**`--run-tests` runs the test suite but doesn't retry on failure**~~ — **done.** On a failed
    test run, `_run_tests_with_retry()` (`agent.py`) re-translates the failing test files with the

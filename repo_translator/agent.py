@@ -182,13 +182,30 @@ def _is_test_file(path: Path, lang: str) -> bool:
 
 
 def collect_files(repo_path: Path, from_lang: str) -> list[Path]:
+    """Every source file of ``from_lang`` under ``repo_path``.
+
+    Args:
+        repo_path: Repository root to search.
+        from_lang: Resolved source language; its extensions decide what counts.
+
+    Returns:
+        Matching files, sorted. Symlinks resolving outside ``repo_path`` are
+        skipped: the repository being translated is untrusted input, and its
+        contents are sent to the provider, so a link named like a source file
+        must not pull in a file outside the tree. ``rglob`` already declines to
+        recurse into symlinked *directories*; this covers symlinked files.
+    """
     exts = set(LANGUAGE_META[from_lang]["extensions"])
+    root = repo_path.resolve()
     files: list[Path] = []
     for path in repo_path.rglob("*"):
         if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if path.is_file() and path.suffix in exts:
-            files.append(path)
+        if not (path.is_file() and path.suffix in exts):
+            continue
+        if path.is_symlink() and not path.resolve().is_relative_to(root):
+            continue
+        files.append(path)
     return sorted(files)
 
 
@@ -316,9 +333,9 @@ def _format_repo_map(
 # Groq has a free tier (rate-limited); prices below are for paid/on-demand usage.
 # openai-compat pricing is unknown (varies by service) — will show None in estimate.
 PRICING: dict[tuple[str, str], tuple[float, float]] = {
-    ("claude",  "haiku"):                       (0.80,   4.00),
-    ("claude",  "sonnet"):                      (3.00,  15.00),
-    ("claude",  "opus"):                        (15.00, 75.00),
+    ("claude",  "haiku"):                       (1.00,   5.00),
+    ("claude",  "sonnet"):                      (2.00,  10.00),
+    ("claude",  "opus"):                        (5.00,  25.00),
     ("openai",  "gpt-4o"):                      (5.00,  15.00),
     ("openai",  "gpt-4o-mini"):                 (0.15,   0.60),
     ("openai",  "gpt-4-turbo"):                 (10.00, 30.00),
@@ -548,8 +565,15 @@ def _score_confidence(
         {{"score": <0-100>, "reason": "<one sentence>"}}
     """).strip()
 
+    # Scoring is advisory -- a failure here must never sink an otherwise good
+    # translation -- but the two ways it fails are different, and the reason is
+    # reported rather than collapsed into a bare 50 the reader can't explain.
     try:
         raw = complete_with_backoff(provider, prompt, max_tokens=256).strip()
+    except Exception as e:  # provider/SDK errors are an open set
+        return 50, f"confidence scoring failed: {type(e).__name__}"
+
+    try:
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -557,9 +581,17 @@ def _score_confidence(
         data   = json.loads(raw.strip())
         score  = max(0, min(100, int(data["score"])))
         reason = str(data.get("reason", ""))[:200]
-        return score, reason
-    except Exception:
-        return 50, "confidence scoring failed"
+    except (IndexError, KeyError, TypeError, ValueError) as e:
+        # json.JSONDecodeError subclasses ValueError, as does int() on a
+        # non-numeric string. Anything outside this set is a bug in the block
+        # above, and should surface rather than be reported as a score of 50.
+        return 50, f"confidence scoring failed: unparsable response ({type(e).__name__})"
+    return score, reason
+
+
+# Recorded as a file's run_output when execute=False, so a report makes clear the
+# translation was never validated by running it rather than silently passing.
+_NOT_EXECUTED_NOTE = "(execution disabled — translated code was not run)"
 
 
 def _try_run(to_lang: str, code: str) -> tuple[bool, str]:
@@ -862,6 +894,7 @@ def translate_repo(
     score_confidence: bool = True,
     resume: bool = True,
     cross_file_context: bool = False,
+    execute: bool = True,
     on_progress: Callable[[dict], None] | None = None,
 ) -> TranslationReport:
     """
@@ -874,6 +907,13 @@ def translate_repo(
       {"type": "tests_done", "passed": bool}
       {"type": "finished", "summary": dict}
     Consumers (e.g. the web UI) use this to stream live progress; the CLI doesn't pass it.
+
+    execute: if False, translated code is never handed to an interpreter --
+    the per-file auto-run is skipped (so the auto-fix loop has no error to
+    feed back, and every file is accepted on its first attempt) and the
+    test-suite run is suppressed even when run_tests_after is True, since
+    running a test suite executes translated code too. Output quality drops:
+    nothing validates that what the model wrote actually runs.
 
     resume: if True (the default) and output_path already holds a checkpoint
     (.translation_state.json) from a previous run of this exact repo_path/
@@ -1011,7 +1051,10 @@ def translate_repo(
                        "status": "failed", "attempts": attempt, "confidence": None})
                 break
 
-            ok, run_output = _try_run(to_lang, translated_code)
+            if execute:
+                ok, run_output = _try_run(to_lang, translated_code)
+            else:
+                ok, run_output = True, _NOT_EXECUTED_NOTE
             final_code = translated_code
             run_ok     = ok
 
@@ -1080,7 +1123,7 @@ def translate_repo(
     # file names (test_patterns == [], e.g. rust's `cargo test`) has no way
     # to report test_files, so it must not be gated on that list being non-empty.
     to_test_patterns = LANGUAGE_META[to_lang].get("test_patterns", [])
-    if run_tests_after and (test_files or not to_test_patterns):
+    if execute and run_tests_after and (test_files or not to_test_patterns):
         passed, test_output = _run_tests_with_retry(
             provider, repo_path, output_path, from_lang, to_lang,
             test_files, verbose, on_progress, repo_map=repo_map,

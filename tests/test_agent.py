@@ -117,6 +117,33 @@ class TestCollectFiles:
         files = collect_files(tmp_path, "typescript")
         assert len(files) == 1
 
+    def test_skips_symlinks_pointing_outside_the_repo(self, tmp_path):
+        """A cloned repo is untrusted input: a symlink named like a source file
+        must not make collect_files read (and ship to the provider) a file the
+        user never asked to translate."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.ts").write_text("const apiKey = 'leaked';")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "real.ts").write_text("const x = 1;")
+        (repo / "innocent.ts").symlink_to(outside / "secret.ts")
+
+        files = collect_files(repo, "typescript")
+
+        assert [f.name for f in files] == ["real.ts"]
+
+    def test_keeps_symlinks_that_stay_inside_the_repo(self, tmp_path):
+        """Only escaping links are dropped — an internal one is a normal repo layout."""
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "real.ts").write_text("const x = 1;")
+        (repo / "alias.ts").symlink_to(repo / "src" / "real.ts")
+
+        files = collect_files(repo, "typescript")
+
+        assert [f.name for f in files] == ["alias.ts", "real.ts"]
+
     def test_ignores_wrong_extension(self, tmp_path):
         (tmp_path / "app.js").write_text("js file")
         (tmp_path / "app.ts").write_text("ts file")
@@ -331,6 +358,38 @@ class TestTranslateRepo:
         assert report.failed == 0
         assert (out / "index.py").exists()
         assert (out / "index.py").read_text() == "x = 1"
+
+    def test_execute_false_translates_without_running_the_output(self, tmp_path):
+        """--no-run still translates; it just never hands the result to an interpreter."""
+        (tmp_path / "index.ts").write_text("const x: number = 1;")
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent._try_run") as try_run:
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    translate_manifests=False, verbose=False,
+                                    score_confidence=False, execute=False)
+
+        try_run.assert_not_called()
+        assert report.translated == 1
+        assert (out / "index.py").read_text() == "x = 1"
+        assert "not run" in (report.files[0].run_output or "")
+
+    def test_execute_false_also_suppresses_the_test_suite_run(self, tmp_path):
+        """run_tests() executes generated code too, so --no-run has to cover it."""
+        (tmp_path / "index.ts").write_text("const x: number = 1;")
+        (tmp_path / "index.test.ts").write_text("test('x', () => {});")
+        out = tmp_path / "out"
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent._run_tests_with_retry") as run_tests:
+            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
+                                    translate_manifests=False, verbose=False,
+                                    score_confidence=False, run_tests_after=True,
+                                    execute=False)
+
+        run_tests.assert_not_called()
+        assert report.tests_passed is None
 
     def test_skips_empty_files(self, tmp_path):
         (tmp_path / "empty.ts").write_text("   \n  ")

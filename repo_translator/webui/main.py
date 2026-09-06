@@ -25,11 +25,25 @@ from repo_translator.webui import jobs
 
 app = FastAPI(title="repo-translator UI")
 
-# Local single-user dev tool: the frontend dev server runs on a different
-# port than the API, so allow all origins rather than hardcoding localhost:5173.
+# Binding to 127.0.0.1 keeps other machines out, but it does not keep *other
+# websites* out: a page the user has open can still POST to 127.0.0.1 from their
+# browser. CORS is what decides whether it may read the reply, and a caller picks
+# its own job output_path -- which /api/jobs/{id}/file then serves files from. With
+# allow_origins=["*"] any site could register a job rooted at "/" and read the
+# user's disk through it. So the allowlist is exactly the two origins that are
+# really us: the Vite dev server, and the API's own port (where the production
+# build is served same-origin).
+_DEV_SERVER_PORT = 5173
+_API_PORT = 8765
+ALLOWED_ORIGINS = [
+    f"http://{host}:{port}"
+    for port in (_DEV_SERVER_PORT, _API_PORT)
+    for host in ("localhost", "127.0.0.1")
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -64,6 +78,7 @@ class TranslateRequest(BaseModel):
     score_confidence: bool = True
     resume: bool = False
     cross_file_context: bool = False
+    execute: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +156,7 @@ def post_job(req: TranslateRequest):
             score_confidence=req.score_confidence,
             resume=req.resume,
             cross_file_context=req.cross_file_context,
+            execute=req.execute,
         )
     except jobs.JobError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

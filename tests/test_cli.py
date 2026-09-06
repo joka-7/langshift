@@ -102,6 +102,18 @@ class TestBuildParser:
 # ─────────────────────────────────────────────
 
 class TestMainValidation:
+    def test_no_run_with_run_tests_exits_1(self, tmp_path, monkeypatch, capsys):
+        """Running the translated test suite executes translated code, so the
+        two flags cannot both be honoured — say so instead of silently picking one."""
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts", "--to", "python",
+            "--no-run", "--run-tests",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "contradictory" in capsys.readouterr().out.lower()
+
     def test_unknown_from_language_exits_1(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", [
             "repo-translate", "--input", str(tmp_path), "--from", "brainfuck", "--to", "python",

@@ -5,6 +5,7 @@ Usage: python3 -m repo_translator.cpp_test_runner [working_dir]
 Exit code: 0 if tests pass, 1 if tests fail or can't compile.
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,48 +29,47 @@ def run_cpp_tests(work_dir: Path) -> int:
 
 
 def _run_with_cmake(work_dir: Path) -> int:
-    """Build with CMake and run tests with ctest."""
+    """Configure, build and run a CMake project's tests.
+
+    Args:
+        work_dir: Directory holding CMakeLists.txt.
+
+    Returns:
+        0 if every test passed, non-zero otherwise.
+    """
+    build_dir = work_dir / "build"
     try:
-        # Create build directory
-        build_dir = work_dir / "build"
         build_dir.mkdir(exist_ok=True)
 
-        # Run cmake
-        cmake_result = subprocess.run(
+        configure = subprocess.run(
             ["cmake", "-B", str(build_dir), "-S", str(work_dir)],
-            capture_output=True,
-            text=True,
-            timeout=60,
+            capture_output=True, text=True, timeout=60,
         )
-        if cmake_result.returncode != 0:
-            print(f"CMake configuration failed:\n{cmake_result.stderr}")
+        if configure.returncode != 0:
+            print(f"CMake configuration failed:\n{configure.stderr}")
             return 1
 
-        # Build tests
-        build_result = subprocess.run(
-            ["cmake", "--build", str(build_dir), "--target", "test"],
-            capture_output=True,
-            text=True,
-            timeout=120,
+        # Build the default target, not "test". In the Makefile and Ninja
+        # generators "test" is ctest's own target -- it runs the suite and
+        # builds nothing, so asking for it here compiled nothing and ctest
+        # then failed with "Unable to find executable" on a perfectly good
+        # project. Compile first, then run the suite below.
+        build = subprocess.run(
+            ["cmake", "--build", str(build_dir)],
+            capture_output=True, text=True, timeout=120,
         )
-        if build_result.returncode != 0:
-            print(f"CMake build failed:\n{build_result.stderr}")
+        if build.returncode != 0:
+            print(f"CMake build failed:\n{build.stderr}")
             return 1
 
-        # Run ctest
-        test_result = subprocess.run(
+        tests = subprocess.run(
             ["ctest", "--output-on-failure"],
-            cwd=build_dir,
-            capture_output=True,
-            text=True,
-            timeout=120,
+            cwd=build_dir, capture_output=True, text=True, timeout=120,
         )
-
-        print(test_result.stdout)
-        if test_result.stderr:
-            print(test_result.stderr)
-
-        return test_result.returncode
+        print(tests.stdout)
+        if tests.stderr:
+            print(tests.stderr)
+        return tests.returncode
 
     except FileNotFoundError as e:
         print(f"CMake/ctest not found: {e}")
@@ -77,13 +77,18 @@ def _run_with_cmake(work_dir: Path) -> int:
     except subprocess.TimeoutExpired:
         print("CMake/ctest test run timed out")
         return 1
-    except Exception as e:
-        print(f"CMake test run failed: {e}")
-        return 1
 
 
 def _run_with_direct_compilation(work_dir: Path) -> int:
-    """Compile and run test files directly with g++/clang++."""
+    """Compile every .cpp in the tree into one binary and run it.
+
+    Args:
+        work_dir: Directory to search for test and source files.
+
+    Returns:
+        0 if the compiled tests passed, non-zero otherwise.
+    """
+    output_file = work_dir / "run_tests"
     try:
         # Find all test files
         test_files = list(work_dir.glob("**/*_test.cpp")) + list(
@@ -107,8 +112,6 @@ def _run_with_direct_compilation(work_dir: Path) -> int:
             print("Neither g++ nor clang++ found in PATH")
             return 1
 
-        # Compile all files together
-        output_file = work_dir / "run_tests"
         cmd = [
             compiler,
             "-std=c++17",
@@ -142,27 +145,26 @@ def _run_with_direct_compilation(work_dir: Path) -> int:
         if test_result.stderr:
             print(test_result.stderr)
 
-        # Clean up
-        output_file.unlink(missing_ok=True)
-
         return test_result.returncode
 
     except subprocess.TimeoutExpired:
         print("C++ test compilation or run timed out")
         return 1
-    except Exception as e:
-        print(f"Direct compilation test run failed: {e}")
-        return 1
+    finally:
+        # Also on the timeout path: the binary is ours, and leaving it behind
+        # puts a stray executable in the user's translated output.
+        output_file.unlink(missing_ok=True)
 
 
 def _find_compiler() -> str | None:
-    """Find g++ or clang++ in PATH."""
-    for compiler in ["g++", "clang++", "c++"]:
-        result = subprocess.run(
-            ["which", compiler],
-            capture_output=True,
-        )
-        if result.returncode == 0:
+    """First available C++ compiler on PATH.
+
+    Returns:
+        "g++", "clang++" or "c++" — whichever resolves first — or None if none
+        of them is on PATH.
+    """
+    for compiler in ("g++", "clang++", "c++"):
+        if shutil.which(compiler):
             return compiler
     return None
 

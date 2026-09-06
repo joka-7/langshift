@@ -1,7 +1,6 @@
 """Unit tests for the C++ test runner module."""
 
-import subprocess
-import sys
+import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,20 +18,15 @@ from repo_translator.cpp_test_runner import (
 class TestFindCompiler:
     """Tests for _find_compiler."""
 
-    def test_find_compiler_success(self) -> None:
-        """Should return compiler if found."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            result = _find_compiler()
-            assert result in ["g++", "clang++", "c++"]
-            assert mock_run.called
+    def test_returns_first_compiler_on_path(self) -> None:
+        """Prefers g++, falling through to clang++ then c++."""
+        with patch("repo_translator.cpp_test_runner.shutil.which") as which:
+            which.side_effect = lambda name: "/usr/bin/clang++" if name == "clang++" else None
+            assert _find_compiler() == "clang++"
 
-    def test_find_compiler_not_found(self) -> None:
-        """Should return None if no compiler found."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1)
-            result = _find_compiler()
-            assert result is None
+    def test_returns_none_when_no_compiler_on_path(self) -> None:
+        with patch("repo_translator.cpp_test_runner.shutil.which", return_value=None):
+            assert _find_compiler() is None
 
 
 class TestRunWithCMake:
@@ -171,3 +165,40 @@ class TestRunCppTests:
                 result = run_cpp_tests(work_dir)
                 assert result == 0
                 mock_direct.assert_called_once()
+
+
+@pytest.mark.integration
+class TestAgainstRealCMakeProject:
+    """
+    The mocked tests above assert which commands are issued; they cannot tell
+    whether those commands actually work. This drives the real toolchain against
+    a minimal project whose single test passes, which is what caught
+    `--build --target test` running ctest before anything was compiled.
+    """
+
+    @pytest.fixture
+    def cmake_project(self, tmp_path: Path) -> Path:
+        (tmp_path / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.10)\n"
+            "project(demo CXX)\n"
+            "enable_testing()\n"
+            "add_executable(demo_test demo_test.cpp)\n"
+            "add_test(NAME demo_test COMMAND demo_test)\n"
+        )
+        (tmp_path / "demo_test.cpp").write_text(
+            "#include <cassert>\nint main() { assert(1 + 1 == 2); return 0; }\n"
+        )
+        return tmp_path
+
+    def test_passing_cmake_suite_exits_zero(self, cmake_project: Path) -> None:
+        if not (shutil.which("cmake") and shutil.which("ctest") and _find_compiler()):
+            pytest.skip("cmake/ctest/C++ compiler not available")
+        assert run_cpp_tests(cmake_project) == 0
+
+    def test_failing_cmake_suite_exits_nonzero(self, cmake_project: Path) -> None:
+        if not (shutil.which("cmake") and shutil.which("ctest") and _find_compiler()):
+            pytest.skip("cmake/ctest/C++ compiler not available")
+        (cmake_project / "demo_test.cpp").write_text(
+            "#include <cassert>\nint main() { assert(1 + 1 == 3); return 0; }\n"
+        )
+        assert run_cpp_tests(cmake_project) != 0
