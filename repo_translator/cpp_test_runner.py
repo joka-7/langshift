@@ -5,6 +5,7 @@ Usage: python3 -m repo_translator.cpp_test_runner [working_dir]
 Exit code: 0 if tests pass, 1 if tests fail or can't compile.
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -156,13 +157,14 @@ def _run_with_direct_compilation(work_dir: Path) -> int:
 
 
 def _find_compiler() -> str | None:
-    """Find g++ or clang++ in PATH."""
-    for compiler in ["g++", "clang++", "c++"]:
-        result = subprocess.run(
-            ["which", compiler],
-            capture_output=True,
-        )
-        if result.returncode == 0:
+    """First available C++ compiler on PATH.
+
+    Returns:
+        "g++", "clang++" or "c++" — whichever resolves first — or None if none
+        of them is on PATH.
+    """
+    for compiler in ("g++", "clang++", "c++"):
+        if shutil.which(compiler):
             return compiler
     return None
 
