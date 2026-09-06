@@ -133,4 +133,6 @@ where = ["."]
 include = ["repo_translator*"]
 
 [project.urls]
-Homepage = "https://github.com/your-username/repo-translator"
+Homepage      = "https://github.com/joka-7/langshift"
+Repository    = "https://github.com/joka-7/langshift"
+Issues        = "https://github.com/joka-7/langshift/issues"

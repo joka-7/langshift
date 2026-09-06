@@ -26,5 +26,7 @@
 "GEMINI.md" = "Gemini CLI's copy of AGENTS.md (generated)"
 ".github/copilot-instructions.md" = "Copilot's copy of AGENTS.md (generated)"
 "ai-config.toml" = "Which rule fragments and target tools ai-sync compiles for this repo"
+"LICENSE" = "MIT — the licence pyproject.toml's [project] table declares"
+"SECURITY.md" = "Threat model (it executes generated code) and how to report a vulnerability"
 "ai-config.local.md" = "Project-specific rules appended verbatim to the generated AGENTS.md"
 ".ai" = "ogen-ai submodule — the shared source of rules, skills and the ai-sync generator"

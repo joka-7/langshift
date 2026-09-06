@@ -11,6 +11,28 @@ The agent:
 
 ---
 
+## ⚠️ Before you run it: langshift executes the code the model writes
+
+The auto-fix loop works by *running* each translated file and feeding the error
+back to the model, so translation and execution are the same step. `_try_run()`
+executes every translated file with the target language's interpreter, and
+`--run-tests` runs the target's test runner over the output — which for some
+languages runs project-defined scripts of its own (`npm test`, `cargo test`).
+
+There is no sandbox. It runs as you, with your filesystem, network and
+credentials. Timeouts (15s per file, 120s per test run) bound how long it runs,
+not what it can do. Treat the repositories you translate as untrusted: their
+contents go into the prompt, so they can influence what gets generated and
+therefore what gets executed.
+
+Run it on code you trust, or run it in a container or VM. To translate with no
+execution and no network at all, use `--provider offline` without `--run-tests`.
+
+See [SECURITY.md](SECURITY.md) for the full threat model, including the web UI's
+localhost-only assumptions.
+
+---
+
 ## Supported languages
 
 | Language | Aliases | Auto-run |
@@ -61,7 +83,7 @@ That's the whole loop. Once you're ready to use a real LLM for higher-quality ou
 | OpenAI-compatible | `openai-compat` | varies | any model, requires `--base-url` |
 | Offline (rule-based) | `offline` | none | n/a — free, no network calls |
 
-> **Offline provider scope:** only translates `typescript`/`javascript` → `python` source files.
+> **Offline provider scope:** translates `typescript`/`javascript` → `python` and `c`/`c++` → `python` source files.
 > It does not translate dependency manifests (`package.json`, etc.) — use a real LLM provider
 > for those, or pass `--no-manifest`.
 
@@ -310,7 +332,9 @@ langshift/
 ├── AGENTS.md           # The compiled coding rules every AI assistant reads — generated, do not…
 ├── CLAUDE.md           # Claude Code's copy of AGENTS.md (generated)
 ├── GEMINI.md           # Gemini CLI's copy of AGENTS.md (generated)
+├── LICENSE             # MIT — the licence pyproject.toml's [project] table declares
 ├── README.md           # Langshift 🔄
+├── SECURITY.md         # Threat model (it executes generated code) and how to report a vulnerability
 ├── ai-config.local.md  # Project-specific rules appended verbatim to the generated AGENTS.md
 ├── ai-config.toml      # Which rule fragments and target tools ai-sync compiles for this repo
 ├── pyproject.toml

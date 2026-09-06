@@ -74,6 +74,7 @@ langshift/
 ├── repo_translator/                       # The CLI/agent package — providers, offline mode, report generation
 │   ├── offline/
 │   │   ├── __init__.py
+│   │   ├── cpp_to_py.py                   # C++ → Python offline rule-based transformer.
 │   │   ├── transformer.py                 # Registry of offline rule-based code transformers.
 │   │   └── ts_to_py.py                    # TypeScript → Python offline rule-based transformer.
 │   ├── providers/                         # One LLM provider adapter per file, behind a shared base interface
@@ -96,6 +97,7 @@ langshift/
 │   ├── __init__.py
 │   ├── agent.py                           # Reads files, translates via LLM provider, runs & fixes.
 │   ├── cli.py                             # Repo-translator CLI
+│   ├── cpp_test_runner.py                 # Compiles and runs C++ tests using CMake + ctest or direct compilation.
 │   ├── manifest.py                        # Converts package.json / go.mod / Gemfile etc.
 │   └── report.py                          # Pretty-prints and saves a JSON + Markdown report.
 ├── tests/                                 # Pytest suite for repo_translator (agent, CLI, providers, offline mode)
@@ -103,6 +105,8 @@ langshift/
 │   ├── helpers.py                         # Shared provider doubles.
 │   ├── test_agent.py                      # Tests for repo_translator.agent
 │   ├── test_cli.py                        # Unit tests for repo_translator.cli.
+│   ├── test_cpp_offline.py                # Unit tests for C++ → Python offline transformer.
+│   ├── test_cpp_test_runner.py            # Unit tests for the C++ test runner module.
 │   ├── test_external_chat.py              # Tests for repo_translator.providers.external_chat
 │   ├── test_integration.py                # Integration tests for the CLI entry point (repo_translator.cli).
 │   ├── test_manifest.py                   # Tests for repo_translator.manifest
@@ -118,7 +122,9 @@ langshift/
 ├── AGENTS.md                              # The compiled coding rules every AI assistant reads — generated, do not…
 ├── CLAUDE.md                              # Claude Code's copy of AGENTS.md (generated)
 ├── GEMINI.md                              # Gemini CLI's copy of AGENTS.md (generated)
+├── LICENSE                                # MIT — the licence pyproject.toml's [project] table declares
 ├── README.md                              # Langshift 🔄
+├── SECURITY.md                            # Threat model (it executes generated code) and how to report a vulnerability
 ├── ai-config.local.md                     # Project-specific rules appended verbatim to the generated AGENTS.md
 ├── ai-config.toml                         # Which rule fragments and target tools ai-sync compiles for this repo
 ├── pyproject.toml
