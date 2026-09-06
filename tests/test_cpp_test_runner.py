@@ -1,8 +1,11 @@
 """Unit tests for the C++ test runner module."""
 
+import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from repo_translator.cpp_test_runner import (
     _find_compiler,
@@ -162,3 +165,40 @@ class TestRunCppTests:
                 result = run_cpp_tests(work_dir)
                 assert result == 0
                 mock_direct.assert_called_once()
+
+
+@pytest.mark.integration
+class TestAgainstRealCMakeProject:
+    """
+    The mocked tests above assert which commands are issued; they cannot tell
+    whether those commands actually work. This drives the real toolchain against
+    a minimal project whose single test passes, which is what caught
+    `--build --target test` running ctest before anything was compiled.
+    """
+
+    @pytest.fixture
+    def cmake_project(self, tmp_path: Path) -> Path:
+        (tmp_path / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.10)\n"
+            "project(demo CXX)\n"
+            "enable_testing()\n"
+            "add_executable(demo_test demo_test.cpp)\n"
+            "add_test(NAME demo_test COMMAND demo_test)\n"
+        )
+        (tmp_path / "demo_test.cpp").write_text(
+            "#include <cassert>\nint main() { assert(1 + 1 == 2); return 0; }\n"
+        )
+        return tmp_path
+
+    def test_passing_cmake_suite_exits_zero(self, cmake_project: Path) -> None:
+        if not (shutil.which("cmake") and shutil.which("ctest") and _find_compiler()):
+            pytest.skip("cmake/ctest/C++ compiler not available")
+        assert run_cpp_tests(cmake_project) == 0
+
+    def test_failing_cmake_suite_exits_nonzero(self, cmake_project: Path) -> None:
+        if not (shutil.which("cmake") and shutil.which("ctest") and _find_compiler()):
+            pytest.skip("cmake/ctest/C++ compiler not available")
+        (cmake_project / "demo_test.cpp").write_text(
+            "#include <cassert>\nint main() { assert(1 + 1 == 3); return 0; }\n"
+        )
+        assert run_cpp_tests(cmake_project) != 0
