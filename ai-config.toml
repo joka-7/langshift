@@ -16,8 +16,8 @@ targets = ["claude", "cursor", "gemini", "copilot"]
 
 [options]
 # `copy` rather than `symlink`: CI (actions/checkout without `submodules:`) and
-# Vercel-style builds never initialize .ai, and ogen-ai is a private repo — a
-# symlink would dangle there and take AGENTS.md with it. Real files always
-# resolve. Re-run ai-sync after pulling rule updates.
+# Vercel-style builds never initialize .ai, so a symlink would dangle there and
+# take AGENTS.md with it. Real files always resolve. Re-run ai-sync after
+# pulling rule updates.
 link_mode = "copy"
 local_tail = "ai-config.local.md"
