@@ -295,7 +295,19 @@ class TestTranslationReportSave:
         r.save(tmp_path)
         md = (tmp_path / "translation_report.md").read_text()
         assert "src/empty.ts" in md
-        assert "Skipped (empty)" in md
+        assert "## ⏭ Skipped" in md
+        # No reason recorded → the file was empty, and the report says so.
+        assert "*(empty)*" in md
+
+    def test_markdown_gives_the_reason_a_file_was_skipped(self, tmp_path):
+        r = self._full_report()
+        r.files.append(FileResult(
+            path="src/clash.ts", status="skipped",
+            error="clash.py already exists and was not written by langshift",
+        ))
+        r.save(tmp_path)
+        md = (tmp_path / "translation_report.md").read_text()
+        assert "already exists and was not written by langshift" in md
 
     def test_markdown_retried_file_flagged(self, tmp_path):
         r = self._full_report()

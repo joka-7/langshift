@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Source language (e.g. ts, go, java)")
     parser.add_argument("--to",       "-t", dest="to_lang",   required=True, metavar="LANG",
                         help="Target language (e.g. python, rust, kotlin)")
+    parser.add_argument("--in-place", action="store_true",
+                        help="Write translated files into the source tree itself, beside "
+                             "the files they came from (src/main.ts → src/main.py), instead "
+                             "of a separate output directory. A file whose destination "
+                             "already exists and wasn't written by langshift is skipped, "
+                             "never overwritten. Cannot be combined with --output.")
     parser.add_argument("--output",   "-o", metavar="PATH", default=None,
                         help="Output directory (default: <input>_<to_lang>)")
     parser.add_argument("--provider", "-p", default=DEFAULT_PROVIDER,
@@ -114,6 +120,11 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.in_place and args.output:
+        print("Error: --in-place and --output are contradictory.")
+        print("  --in-place writes into the input directory; drop one of them.")
+        sys.exit(1)
+
     if args.no_run and args.run_tests:
         print("Error: --no-run and --run-tests are contradictory.")
         print("  Running the translated test suite executes the translated code.")
@@ -133,11 +144,12 @@ def main() -> None:
         print(f"Error: input path does not exist: {input_path}")
         sys.exit(1)
 
-    output_path = (
-        Path(args.output).expanduser().resolve()
-        if args.output
-        else input_path.parent / f"{input_path.name}_{_ALIAS_MAP[to_key]}"
-    )
+    if args.in_place:
+        output_path = input_path
+    elif args.output:
+        output_path = Path(args.output).expanduser().resolve()
+    else:
+        output_path = input_path.parent / f"{input_path.name}_{_ALIAS_MAP[to_key]}"
 
     # Pricing label for display
     price = price_label(args.provider, args.model, args.base_url)

@@ -11,11 +11,17 @@ from pathlib import Path
 
 _CONFIDENCE_THRESHOLD = 70
 
+# Both mean "not translated", and both belong in the report's skipped total:
+# "skipped" is an empty source file, "skipped_existing" an in-place collision.
+_SKIPPED_STATUSES = frozenset({"skipped", "skipped_existing"})
+
 
 @dataclass
 class FileResult:
     path: str
-    status: str          # "ok" | "ok_with_warnings" | "failed" | "skipped"
+    # "ok" | "ok_with_warnings" | "failed" | "skipped" (source was empty) |
+    # "skipped_existing" (in-place run refused to overwrite a file it didn't write)
+    status: str
     attempts: int = 1
     error: str | None = None
     run_output: str | None = None
@@ -58,7 +64,7 @@ class TranslationReport:
 
     @property
     def skipped(self) -> int:
-        return sum(1 for f in self.files if f.status == "skipped")
+        return sum(1 for f in self.files if f.status in _SKIPPED_STATUSES)
 
     @property
     def needed_retry(self) -> int:
@@ -163,7 +169,7 @@ class TranslationReport:
     def _to_markdown(self) -> str:
         ok_files      = [f for f in self.files if f.status in ("ok", "ok_with_warnings")]
         failed_files  = [f for f in self.files if f.status == "failed"]
-        skipped_files = [f for f in self.files if f.status == "skipped"]
+        skipped_files = [f for f in self.files if f.status in _SKIPPED_STATUSES]
 
         scored = self.high_confidence + self.needs_review
         conf_row = (
@@ -223,9 +229,13 @@ class TranslationReport:
             lines.append("")
 
         if skipped_files:
-            lines += ["## ⏭ Skipped (empty)", ""]
+            # Not all skips are empty files: an in-place run also skips a file
+            # whose destination already exists and wasn't written by langshift.
+            # Those carry a reason, and hiding it would read as "nothing to do".
+            lines += ["## ⏭ Skipped", ""]
             for f in skipped_files:
-                lines.append(f"- `{f.path}`")
+                reason = f" — {f.error}" if f.error else " *(empty)*"
+                lines.append(f"- `{f.path}`{reason}")
             lines.append("")
 
         return "\n".join(lines)

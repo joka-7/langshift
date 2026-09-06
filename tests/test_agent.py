@@ -391,6 +391,88 @@ class TestTranslateRepo:
         run_tests.assert_not_called()
         assert report.tests_passed is None
 
+    def test_in_place_skips_files_it_would_overwrite(self, tmp_path):
+        """Translating into the source tree must never clobber a file the tool
+        didn't write — that's someone's working copy, not an output directory."""
+        (tmp_path / "main.ts").write_text("const x: number = 1;")
+        (tmp_path / "main.py").write_text("# HAND-WRITTEN, DO NOT TOUCH")
+        provider = MockProvider("x = 1")
+
+        report = translate_repo(tmp_path, tmp_path, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False,
+                                score_confidence=False)
+
+        assert (tmp_path / "main.py").read_text() == "# HAND-WRITTEN, DO NOT TOUCH"
+        assert report.translated == 0
+        skipped = [f for f in report.files if f.status == "skipped_existing"]
+        assert len(skipped) == 1
+        assert "already exists" in (skipped[0].error or "")
+
+    def test_in_place_translates_files_that_do_not_collide(self, tmp_path):
+        """One collision must not stop the rest of the run."""
+        (tmp_path / "keep.ts").write_text("const x: number = 1;")
+        (tmp_path / "clash.ts").write_text("const y: number = 2;")
+        (tmp_path / "clash.py").write_text("# mine")
+        provider = MockProvider("x = 1")
+
+        report = translate_repo(tmp_path, tmp_path, "ts", "python", provider=provider,
+                                translate_manifests=False, verbose=False,
+                                score_confidence=False)
+
+        assert (tmp_path / "keep.py").read_text() == "x = 1"
+        assert (tmp_path / "clash.py").read_text() == "# mine"
+        assert report.translated == 1
+        assert report.skipped == 1
+
+    def test_in_place_rerun_overwrites_its_own_previous_output(self, tmp_path):
+        """A file this tool wrote on an earlier run is ours to replace — otherwise
+        re-running in place would skip everything it produced the first time."""
+        (tmp_path / "main.ts").write_text("const x: number = 1;")
+
+        translate_repo(tmp_path, tmp_path, "ts", "python", provider=MockProvider("x = 1"),
+                       translate_manifests=False, verbose=False, score_confidence=False)
+        assert (tmp_path / "main.py").read_text() == "x = 1"
+
+        report = translate_repo(tmp_path, tmp_path, "ts", "python",
+                                provider=MockProvider("x = 2"),
+                                translate_manifests=False, verbose=False,
+                                score_confidence=False, resume=False)
+
+        assert (tmp_path / "main.py").read_text() == "x = 2"
+        assert report.skipped == 0
+
+    def test_in_place_rerun_still_protects_a_file_it_refused_to_write(self, tmp_path):
+        """Regression: refusing to overwrite records the source path in the
+        checkpoint. If provenance counted every recorded path, the second run
+        would treat the file as its own and clobber exactly what the first
+        run protected."""
+        (tmp_path / "clash.ts").write_text("const y: number = 2;")
+        (tmp_path / "clash.py").write_text("# HAND-WRITTEN")
+
+        for _ in range(2):
+            report = translate_repo(tmp_path, tmp_path, "ts", "python",
+                                    provider=MockProvider("y = 2"),
+                                    translate_manifests=False, verbose=False,
+                                    score_confidence=False, resume=False)
+
+        assert (tmp_path / "clash.py").read_text() == "# HAND-WRITTEN"
+        assert [f.status for f in report.files] == ["skipped_existing"]
+
+    def test_separate_output_dir_still_overwrites_freely(self, tmp_path):
+        """The guard is scoped to in-place: a dedicated output directory is the
+        tool's to manage, and overwriting there is the existing contract."""
+        (tmp_path / "main.ts").write_text("const x: number = 1;")
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "main.py").write_text("# stale output")
+
+        report = translate_repo(tmp_path, out, "ts", "python", provider=MockProvider("x = 1"),
+                                translate_manifests=False, verbose=False,
+                                score_confidence=False)
+
+        assert (out / "main.py").read_text() == "x = 1"
+        assert report.translated == 1
+
     def test_skips_empty_files(self, tmp_path):
         (tmp_path / "empty.ts").write_text("   \n  ")
         out      = tmp_path / "out"

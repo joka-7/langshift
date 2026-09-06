@@ -797,6 +797,52 @@ def _load_checkpoint(
     }
 
 
+# Statuses whose handling ended in a dest.write_text(). "skipped" is the
+# empty-source case, which writes an empty file; "failed" and
+# "skipped_existing" write nothing at all.
+_STATUSES_THAT_WROTE_A_FILE = frozenset({"ok", "ok_with_warnings", "skipped"})
+
+
+def _recorded_source_paths(
+    output_path: Path, repo_path: Path, from_lang: str, to_lang: str,
+) -> set[str]:
+    """Source paths a previous run of this same translation already handled.
+
+    Args:
+        output_path: Directory holding the checkpoint file.
+        repo_path: Input repository, matched against the checkpoint's own record.
+        from_lang: Resolved source language, matched likewise.
+        to_lang: Resolved target language, matched likewise.
+
+    Returns:
+        The source paths whose destination this tool actually wrote. Broader
+        than _load_checkpoint(), which returns only the successes worth
+        reusing: a file translated badly enough to carry a warning header is
+        still ours to replace. Narrower than "every recorded path", because
+        "failed" (the provider errored) and "skipped_existing" (we refused to
+        overwrite) both record a path without writing anything -- counting
+        those would let the next run clobber the very file this one protected.
+        Empty when no matching checkpoint exists.
+    """
+    state_file = output_path / CHECKPOINT_FILENAME
+    if not state_file.exists():
+        return set()
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    if (
+        data.get("input_path") != str(repo_path)
+        or data.get("from_lang") != from_lang
+        or data.get("to_lang") != to_lang
+    ):
+        return set()
+    return {
+        f["path"] for f in data.get("files", [])
+        if "path" in f and f.get("status") in _STATUSES_THAT_WROTE_A_FILE
+    }
+
+
 def _save_checkpoint(
     output_path: Path, repo_path: Path, from_lang: str, to_lang: str,
     report: TranslationReport,
@@ -976,6 +1022,16 @@ def translate_repo(
     if checkpoint and verbose:
         print(f"  ↻ Resuming: {len(checkpoint)} file(s) already completed in a previous run\n")
 
+    # Writing into the source tree makes every destination collision somebody's
+    # working copy rather than a stale artifact in a directory we own. Provenance
+    # is read regardless of `resume`: --no-resume means "translate it again", not
+    # "you may now overwrite files you never wrote".
+    in_place = output_path.resolve() == repo_path.resolve()
+    ours = (
+        _recorded_source_paths(output_path, repo_path, from_lang, to_lang)
+        if in_place else set()
+    )
+
     # ── 3. Translate each file ─────────────────────────────────────────────
     for i, src_file in enumerate(files, 1):
         rel     = src_file.relative_to(repo_path)
@@ -997,6 +1053,17 @@ def translate_repo(
             _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
                    "status": checkpointed["status"], "attempts": checkpointed["attempts"],
                    "confidence": checkpointed.get("confidence")})
+            continue
+
+        if in_place and dest.exists() and str(rel) not in ours:
+            reason = f"{dest.name} already exists and was not written by langshift"
+            report.files.append(
+                FileResult(path=str(rel), status="skipped_existing", error=reason)
+            )
+            if verbose:
+                print(f"→ ⏭ skipped ({reason})")
+            _emit({"type": "file_done", "index": i, "total": len(files), "path": str(rel),
+                   "status": "skipped_existing", "attempts": 0, "confidence": None})
             continue
 
         source_code = src_file.read_text(encoding="utf-8", errors="replace")
