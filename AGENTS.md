@@ -170,6 +170,7 @@ repo-translate --input ./my-ts-repo --from ts --to python
 repo-translate --input ./my-repo --from ts --to python --run-tests  # also run translated tests
 repo-translate --input ./my-ts-repo --from ts --to python --provider offline  # no API key needed
 repo-translate --input ./my-repo --from ts --to python --no-run  # never execute translated code
+repo-translate --input ./my-repo --from ts --to python --in-place  # write beside the sources
 pytest         # full suite (unit + integration)
 pytest -m "not integration"   # fast lane only — mocked providers, no subprocesses/threads
 ruff check .   # lint
@@ -348,6 +349,14 @@ still need no API key or network access.
    `FileResult.chunks` records the count (`None` when not chunked) and shows up in the report.
 
 6. **Monorepos with mixed languages** — `collect_files()` only handles one source language. Fix: detect language per directory.
+
+   Related: `--in-place` (output == input) writes each translated file beside its
+   source. `translate_repo()` detects that case itself (`in_place`) and refuses to
+   overwrite any destination it didn't write, recording the refusal as
+   `skipped_existing`. Provenance comes from `_recorded_source_paths()`, which
+   counts only statuses that actually wrote a file — `failed` and
+   `skipped_existing` record a path without writing one, and treating those as
+   ours would let the next run clobber the file the previous run protected.
 
 7. ~~**Progress persistence**~~ — **done.** `translate_repo()` writes `.translation_state.json`
    into the output directory after every file (`_save_checkpoint()`); on the next run, if its

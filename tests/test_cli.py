@@ -102,6 +102,18 @@ class TestBuildParser:
 # ─────────────────────────────────────────────
 
 class TestMainValidation:
+    def test_in_place_with_output_exits_1(self, tmp_path, monkeypatch, capsys):
+        """Both flags name the destination; honouring one silently would hide
+        which directory is about to be written into."""
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts", "--to", "python",
+            "--in-place", "--output", str(tmp_path / "out"),
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "contradictory" in capsys.readouterr().out.lower()
+
     def test_no_run_with_run_tests_exits_1(self, tmp_path, monkeypatch, capsys):
         """Running the translated test suite executes translated code, so the
         two flags cannot both be honoured — say so instead of silently picking one."""
@@ -162,6 +174,22 @@ class TestMainOutputPathAndExitCode:
                 cli.main()
         assert exc.value.code == 0
         assert mock_translate.call_args.kwargs["output_path"] == input_dir.parent / "myrepo_python"
+
+    def test_in_place_sets_output_to_the_input_directory(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "myrepo"
+        input_dir.mkdir()
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(input_dir), "--from", "ts", "--to", "python",
+            "--provider", "offline", "--no-report", "--in-place",
+        ])
+        with patch("repo_translator.cli.translate_repo", return_value=_report()) as mock_translate, \
+             patch("repo_translator.cli.make_offline_provider", return_value=MagicMock()):
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+        assert exc.value.code == 0
+        kwargs = mock_translate.call_args.kwargs
+        assert kwargs["output_path"] == input_dir
+        assert kwargs["output_path"] == kwargs["repo_path"]
 
     def test_explicit_output_path_is_respected(self, tmp_path, monkeypatch):
         input_dir = tmp_path / "repo"

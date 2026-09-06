@@ -167,6 +167,10 @@ repo-translate --input ./my-repo --from ts --to python --provider offline   # fr
 # Custom output directory
 repo-translate --input ./my-repo --from go --to python --output ./translated
 
+# In place: write translated files beside their sources, in the same folders
+# (src/main.ts → src/main.py) instead of a separate output directory
+repo-translate --input ./my-repo --from ts --to python --in-place
+
 # Skip manifest translation
 repo-translate --input ./my-repo --from ts --to python --no-manifest
 
@@ -205,6 +209,29 @@ repo-translate \
   --cross-file-context    \
   --quiet
 ```
+
+---
+
+### Translating in place
+
+By default the output goes to a sibling directory (`./my-repo` → `./my-repo_python`).
+`--in-place` writes each translated file next to the file it came from instead, keeping
+your existing folder layout:
+
+```
+src/main.ts          →  src/main.py
+src/utils/helper.ts  →  src/utils/helper.py
+```
+
+**A file is never overwritten unless langshift wrote it.** If `src/main.py` already
+exists and langshift didn't create it, that file is skipped, listed in the report with
+the reason, and the source is left untranslated — so pointing this at a working tree
+can't destroy hand-written code. Re-running is still free to replace langshift's own
+earlier output.
+
+The bookkeeping files land in the source tree too: `.translation_state.json` (the
+`--resume` checkpoint) and, unless you pass `--no-report`, `translation_report.json`
+and `.md`. Add them to `.gitignore` if you translate in place regularly.
 
 ---
 
