@@ -182,13 +182,30 @@ def _is_test_file(path: Path, lang: str) -> bool:
 
 
 def collect_files(repo_path: Path, from_lang: str) -> list[Path]:
+    """Every source file of ``from_lang`` under ``repo_path``.
+
+    Args:
+        repo_path: Repository root to search.
+        from_lang: Resolved source language; its extensions decide what counts.
+
+    Returns:
+        Matching files, sorted. Symlinks resolving outside ``repo_path`` are
+        skipped: the repository being translated is untrusted input, and its
+        contents are sent to the provider, so a link named like a source file
+        must not pull in a file outside the tree. ``rglob`` already declines to
+        recurse into symlinked *directories*; this covers symlinked files.
+    """
     exts = set(LANGUAGE_META[from_lang]["extensions"])
+    root = repo_path.resolve()
     files: list[Path] = []
     for path in repo_path.rglob("*"):
         if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if path.is_file() and path.suffix in exts:
-            files.append(path)
+        if not (path.is_file() and path.suffix in exts):
+            continue
+        if path.is_symlink() and not path.resolve().is_relative_to(root):
+            continue
+        files.append(path)
     return sorted(files)
 
 

@@ -117,6 +117,33 @@ class TestCollectFiles:
         files = collect_files(tmp_path, "typescript")
         assert len(files) == 1
 
+    def test_skips_symlinks_pointing_outside_the_repo(self, tmp_path):
+        """A cloned repo is untrusted input: a symlink named like a source file
+        must not make collect_files read (and ship to the provider) a file the
+        user never asked to translate."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.ts").write_text("const apiKey = 'leaked';")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "real.ts").write_text("const x = 1;")
+        (repo / "innocent.ts").symlink_to(outside / "secret.ts")
+
+        files = collect_files(repo, "typescript")
+
+        assert [f.name for f in files] == ["real.ts"]
+
+    def test_keeps_symlinks_that_stay_inside_the_repo(self, tmp_path):
+        """Only escaping links are dropped — an internal one is a normal repo layout."""
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "real.ts").write_text("const x = 1;")
+        (repo / "alias.ts").symlink_to(repo / "src" / "real.ts")
+
+        files = collect_files(repo, "typescript")
+
+        assert [f.name for f in files] == ["alias.ts", "real.ts"]
+
     def test_ignores_wrong_extension(self, tmp_path):
         (tmp_path / "app.js").write_text("js file")
         (tmp_path / "app.ts").write_text("ts file")
