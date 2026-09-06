@@ -333,9 +333,9 @@ def _format_repo_map(
 # Groq has a free tier (rate-limited); prices below are for paid/on-demand usage.
 # openai-compat pricing is unknown (varies by service) — will show None in estimate.
 PRICING: dict[tuple[str, str], tuple[float, float]] = {
-    ("claude",  "haiku"):                       (0.80,   4.00),
-    ("claude",  "sonnet"):                      (3.00,  15.00),
-    ("claude",  "opus"):                        (15.00, 75.00),
+    ("claude",  "haiku"):                       (1.00,   5.00),
+    ("claude",  "sonnet"):                      (2.00,  10.00),
+    ("claude",  "opus"):                        (5.00,  25.00),
     ("openai",  "gpt-4o"):                      (5.00,  15.00),
     ("openai",  "gpt-4o-mini"):                 (0.15,   0.60),
     ("openai",  "gpt-4-turbo"):                 (10.00, 30.00),
