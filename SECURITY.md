@@ -14,14 +14,17 @@ langshift is a **local developer tool**. It assumes one trusted user on one
 machine, translating a repository they already trust. It is not hardened for
 multi-tenant use, and nothing here should be exposed to a network.
 
-### It runs code the model wrote, on your machine, unsandboxed
+### With `--run`, it runs code the model wrote, on your machine, unsandboxed
 
-This is the design, not a bug — the auto-fix loop works by running the
-translation and feeding the error back to the model. Concretely:
+Execution is **off by default**: a plain run translates and writes files without
+executing any of them. `--run` turns it on (and `--run-tests` implies it),
+because the auto-fix loop works by running the translation and feeding the error
+back to the model. Once on, concretely:
 
 - `_try_run()` (`repo_translator/agent.py`) writes each translated file to a
   temp file and executes it with the target language's interpreter
-  (`LANGUAGE_META[lang]["runner"]`), with a 15s timeout.
+  (`LANGUAGE_META[lang]["runner"]`), with a 15s timeout. Reached only when
+  execution is enabled.
 - `run_tests()` (`repo_translator/agent.py`) runs the target language's test
   runner in the output directory (`--run-tests`), with a 120s timeout. For some
   languages that alone executes project-defined scripts — `npm test` runs
@@ -41,14 +44,19 @@ There is no sandbox. Two consequences worth being explicit about:
    injection can influence what gets generated — and therefore what gets
    executed. Do not point langshift at a repository you would not run.
 
-If that is not acceptable for your input, pass `--no-run` (`execute=False` on
-`translate_repo()`, `"execute": false` on `POST /api/jobs`). It skips the
-per-file auto-run and suppresses the test-suite run, so nothing generated is
-executed; the CLI rejects `--no-run --run-tests` rather than quietly honouring
-one of them. The cost is quality — the auto-fix loop has no runtime error to
-learn from. For no execution *and* no network, add `--provider offline`, which
-is pure rule-based rewriting (`repo_translator/offline/`) and calls no model at
-all. Running in a container or VM remains the stronger boundary.
+So the safe path is the default one: omit `--run` and nothing generated is
+executed. The cost is quality — the auto-fix loop has no runtime error to learn
+from, and nothing verifies the translation runs at all.
+
+`execute` is deliberately tri-state on `translate_repo()` and `POST /api/jobs`.
+Unset means "infer": `run_tests_after` turns execution on, so asking for the
+suite can never silently do nothing. An explicit `execute=False` is a refusal
+and is never overridden — pairing it with `run_tests_after` raises, and the CLI
+rejects `--no-run --run-tests` the same way, rather than quietly honouring one.
+
+For no execution *and* no network, add `--provider offline`, which is pure
+rule-based rewriting (`repo_translator/offline/`) and calls no model at all.
+Running in a container or VM remains the stronger boundary for `--run`.
 
 ### The web UI is localhost-only, and depends on staying that way
 

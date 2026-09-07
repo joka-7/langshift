@@ -78,7 +78,7 @@ class TranslateRequest(BaseModel):
     score_confidence: bool = True
     resume: bool = False
     cross_file_context: bool = False
-    execute: bool = True
+    execute: bool | None = None
 
 
 # ---------------------------------------------------------------------------

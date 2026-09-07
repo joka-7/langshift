@@ -940,7 +940,7 @@ def translate_repo(
     score_confidence: bool = True,
     resume: bool = True,
     cross_file_context: bool = False,
-    execute: bool = True,
+    execute: bool | None = None,
     on_progress: Callable[[dict], None] | None = None,
 ) -> TranslationReport:
     """
@@ -990,6 +990,18 @@ def translate_repo(
         input_path=str(repo_path),
         output_path=str(output_path),
     )
+
+    # Running the translated test suite executes translated code, so asking for it
+    # is itself a request to execute. Resolved here rather than in the CLI so no
+    # caller can get a silent no-op. None means "unspecified, infer from
+    # run_tests_after"; an explicit False is a refusal and is never overridden --
+    # that is the whole value of the flag, so the contradiction is an error.
+    if execute is False and run_tests_after:
+        raise ValueError(
+            "execute=False contradicts run_tests_after=True: running the "
+            "translated test suite executes the translated code."
+        )
+    execute = bool(execute) or run_tests_after
 
     start = time.time()
 

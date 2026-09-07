@@ -90,12 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Skip confirmation prompt when using --estimate")
     parser.add_argument("--run-tests", action="store_true",
                         help="After translation, run the translated test suite")
-    parser.add_argument("--no-run", action="store_true",
-                        help="Never execute the translated code. Normally each file is run "
-                             "once to check it works, and the error is fed back for up to "
-                             "3 auto-fix attempts; this disables that, so nothing the model "
-                             "wrote is executed. Output quality drops accordingly. Implies "
-                             "no --run-tests.")
+    parser.add_argument("--run", action=argparse.BooleanOptionalAction, default=None,
+                        help="Execute each translated file once to check it works, feeding "
+                             "any error back for up to 3 auto-fix attempts. Off by default: "
+                             "the model's output is code, and running it is a decision you "
+                             "make rather than one made for you. Turning it on markedly "
+                             "improves output, since nothing else verifies the translation "
+                             "runs. --run-tests implies it. (default: --no-run)")
     parser.add_argument("--no-manifest", action="store_true",
                         help="Skip dependency manifest translation (package.json etc.)")
     parser.add_argument("--no-confidence", action="store_true",
@@ -125,7 +126,7 @@ def main() -> None:
         print("  --in-place writes into the input directory; drop one of them.")
         sys.exit(1)
 
-    if args.no_run and args.run_tests:
+    if args.run is False and args.run_tests:
         print("Error: --no-run and --run-tests are contradictory.")
         print("  Running the translated test suite executes the translated code.")
         sys.exit(1)
@@ -228,7 +229,7 @@ def main() -> None:
         score_confidence=not args.no_confidence,
         resume=args.resume,
         cross_file_context=args.cross_file_context,
-        execute=not args.no_run,
+        execute=args.run,
     )
 
     report.print_summary()
