@@ -19,6 +19,7 @@ from repo_translator.agent import (
     resolve_language,
     translate_repo,
 )
+from repo_translator.diagram import DIAGRAM_TYPES, generate_diagrams
 from repo_translator.providers import (
     DEFAULT_BACKEND,
     SUPPORTED_BACKENDS,
@@ -43,10 +44,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input",    "-i", required=True, metavar="PATH",
                         help="Path to the source repository")
+    parser.add_argument("--mode", default="translate",
+                        choices=["translate", "comment", "diagram"],
+                        help="'translate' (default): shift the repo from --from to --to. "
+                             "'comment': add doc-comments to classes/functions and inline "
+                             "comments to non-obvious code, in the same language (no --to). "
+                             "'diagram': analyze the repo's structure and emit static/dynamic/"
+                             "HLD/LLD diagrams (mermaid + draw.io), see --diagram-types "
+                             "(no --to).")
     parser.add_argument("--from",     "-f", dest="from_lang", required=True, metavar="LANG",
                         help="Source language (e.g. ts, go, java)")
-    parser.add_argument("--to",       "-t", dest="to_lang",   required=True, metavar="LANG",
-                        help="Target language (e.g. python, rust, kotlin)")
+    parser.add_argument("--to",       "-t", dest="to_lang",   default=None, metavar="LANG",
+                        help="Target language (e.g. python, rust, kotlin). "
+                             "Required for --mode translate; not used otherwise.")
+    parser.add_argument("--diagram-types", default=None, metavar="LIST",
+                        help=f"Comma-separated subset of {','.join(DIAGRAM_TYPES)} to generate "
+                             "with --mode diagram (default: all four).")
     parser.add_argument("--in-place", action="store_true",
                         help="Write translated files into the source tree itself, beside "
                              "the files they came from (src/main.ts → src/main.py), instead "
@@ -54,7 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "already exists and wasn't written by langshift is skipped, "
                              "never overwritten. Cannot be combined with --output.")
     parser.add_argument("--output",   "-o", metavar="PATH", default=None,
-                        help="Output directory (default: <input>_<to_lang>)")
+                        help="Output directory (default: <input>_<to_lang> for --mode "
+                             "translate, <input>_commented for --mode comment, "
+                             "<input>_diagrams for --mode diagram)")
     parser.add_argument("--provider", "-p", default=DEFAULT_PROVIDER,
                         choices=list(SUPPORTED_PROVIDERS),
                         help=f"LLM provider (default: {DEFAULT_PROVIDER})")
@@ -131,14 +146,58 @@ def main() -> None:
         print("  Running the translated test suite executes the translated code.")
         sys.exit(1)
 
-    from_key = args.from_lang.lower().strip()
-    to_key   = args.to_lang.lower().strip()
+    if args.mode == "translate" and not args.to_lang:
+        print("Error: --to is required for --mode translate.")
+        sys.exit(1)
+    if args.mode != "translate" and args.to_lang:
+        print(f"Error: --to is not used with --mode {args.mode} (source language only).")
+        sys.exit(1)
+    if args.mode != "translate" and args.provider == "offline":
+        print(f"Error: --provider offline does not support --mode {args.mode} "
+              f"(rule-based source-to-source transformer only).")
+        sys.exit(1)
+    if args.mode != "translate" and args.cross_file_context:
+        print(f"Error: --cross-file-context is not supported with --mode {args.mode}.")
+        sys.exit(1)
+    if args.mode != "diagram" and args.diagram_types:
+        print("Error: --diagram-types only applies to --mode diagram.")
+        sys.exit(1)
+    if args.mode == "diagram" and args.in_place:
+        print("Error: --in-place is not supported with --mode diagram.")
+        sys.exit(1)
+    if args.mode == "diagram" and (args.run_tests or args.run is True):
+        print("Error: --run-tests/--run are not supported with --mode diagram "
+              "(nothing is executed).")
+        sys.exit(1)
+    if args.mode == "diagram" and args.estimate:
+        print("Error: --estimate is not supported with --mode diagram yet.")
+        sys.exit(1)
 
-    for key, label in [(from_key, "--from"), (to_key, "--to")]:
-        if key not in _ALIAS_MAP:
-            print(f"Error: unknown language for {label}: '{key}'")
+    from_key = args.from_lang.lower().strip()
+    if from_key not in _ALIAS_MAP:
+        print(f"Error: unknown language for --from: '{from_key}'")
+        print(f"  Supported: {', '.join(LANGUAGE_META)}")
+        sys.exit(1)
+
+    diagram_types: tuple[str, ...] = DIAGRAM_TYPES
+    if args.mode == "diagram" and args.diagram_types:
+        requested = tuple(t.strip() for t in args.diagram_types.split(","))
+        unknown = [t for t in requested if t not in DIAGRAM_TYPES]
+        if unknown:
+            print(f"Error: unknown diagram type(s): {', '.join(unknown)}")
+            print(f"  Supported: {', '.join(DIAGRAM_TYPES)}")
+            sys.exit(1)
+        diagram_types = requested
+
+    to_key = ""
+    if args.mode == "translate":
+        to_key = args.to_lang.lower().strip()
+        if to_key not in _ALIAS_MAP:
+            print(f"Error: unknown language for --to: '{to_key}'")
             print(f"  Supported: {', '.join(LANGUAGE_META)}")
             sys.exit(1)
+    elif args.mode == "comment":
+        to_key = from_key  # annotate in place, same language
 
     input_path = Path(args.input).expanduser().resolve()
     if not input_path.exists():
@@ -149,11 +208,25 @@ def main() -> None:
         output_path = input_path
     elif args.output:
         output_path = Path(args.output).expanduser().resolve()
-    else:
+    elif args.mode == "translate":
         output_path = input_path.parent / f"{input_path.name}_{_ALIAS_MAP[to_key]}"
+    elif args.mode == "comment":
+        output_path = input_path.parent / f"{input_path.name}_commented"
+    else:  # diagram
+        output_path = input_path.parent / f"{input_path.name}_diagrams"
 
     # Pricing label for display
     price = price_label(args.provider, args.model, args.base_url)
+
+    if args.mode == "translate":
+        mode_lines = f"  From     : {_ALIAS_MAP[from_key]}\n  To       : {_ALIAS_MAP[to_key]}"
+    elif args.mode == "comment":
+        mode_lines = f"  Language : {_ALIAS_MAP[from_key]}  (mode: comment)"
+    else:
+        mode_lines = (
+            f"  Language : {_ALIAS_MAP[from_key]}  (mode: diagram)\n"
+            f"  Diagrams : {', '.join(diagram_types)}"
+        )
 
     print(f"""
 ╔══════════════════════════════════════════════╗
@@ -161,8 +234,7 @@ def main() -> None:
 ╚══════════════════════════════════════════════╝
 
   Input    : {input_path}
-  From     : {_ALIAS_MAP[from_key]}
-  To       : {_ALIAS_MAP[to_key]}
+{mode_lines}
   Provider : {args.provider} / {args.model}  ({price})
   Backend  : {args.backend}
   Output   : {output_path}
@@ -173,7 +245,7 @@ def main() -> None:
             repo_path=input_path,
             from_lang=from_key,
             to_lang=to_key,
-            translate_manifests=not args.no_manifest,
+            translate_manifests=not args.no_manifest and args.mode == "translate",
             provider=args.provider,
             model=args.model,
             score_confidence=not args.no_confidence,
@@ -195,7 +267,7 @@ def main() -> None:
 
         if not args.yes:
             try:
-                answer = input("  Proceed with translation? [y/N]: ").strip().lower()
+                answer = input("  Proceed? [y/N]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print("\n  Aborted.")
                 sys.exit(0)
@@ -217,6 +289,20 @@ def main() -> None:
         print(f"Error: {e}")
         sys.exit(1)
 
+    if args.mode == "diagram":
+        diagram_report = generate_diagrams(
+            repo_path=input_path,
+            output_path=output_path,
+            lang=from_key,
+            provider=provider,
+            diagram_types=diagram_types,
+            verbose=not args.quiet,
+        )
+        diagram_report.print_summary()
+        if not args.no_report:
+            diagram_report.save(output_path)
+        sys.exit(1 if diagram_report.failed > 0 else 0)
+
     report = translate_repo(
         repo_path=input_path,
         output_path=output_path,
@@ -230,6 +316,7 @@ def main() -> None:
         resume=args.resume,
         cross_file_context=args.cross_file_context,
         execute=args.run,
+        mode=args.mode,
     )
 
     report.print_summary()
