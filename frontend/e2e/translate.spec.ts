@@ -19,7 +19,13 @@ async function runOfflineTranslation(page: Page) {
   await expect(page.getByText('typescript → python via offline')).toBeVisible()
 
   await page.getByRole('button', { name: 'Confirm & start' }).click()
-  await expect(page.getByText('Translating...')).toBeVisible()
+  // A one-file offline translation can finish before this assertion runs, so
+  // requiring the in-flight state makes the test lose a race it never needed to
+  // enter. What matters is that the click started a run: accept either the
+  // progress view or the report it turns into.
+  await expect(
+    page.getByText('Translating...').or(page.getByRole('heading', { name: 'Report' })),
+  ).toBeVisible()
 
   await expect(page.getByRole('heading', { name: 'Report' })).toBeVisible({ timeout: 30_000 })
 }
