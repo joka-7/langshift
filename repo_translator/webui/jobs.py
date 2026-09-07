@@ -143,7 +143,7 @@ def start_job(
                            # resuming by default could silently reuse a checkpoint
                            # from an unrelated earlier run against the same repo.
     cross_file_context: bool = False,
-    execute: bool = True,
+    execute: bool | None = None,
 ) -> Job:
     repo_path = Path(input_path).expanduser()
     if not repo_path.exists():
@@ -199,7 +199,7 @@ def _run_job(
     score_confidence: bool,
     resume: bool,
     cross_file_context: bool,
-    execute: bool,
+    execute: bool | None,
 ) -> None:
     try:
         report = translate_repo(

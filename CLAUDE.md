@@ -169,7 +169,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 repo-translate --input ./my-ts-repo --from ts --to python
 repo-translate --input ./my-repo --from ts --to python --run-tests  # also run translated tests
 repo-translate --input ./my-ts-repo --from ts --to python --provider offline  # no API key needed
-repo-translate --input ./my-repo --from ts --to python --no-run  # never execute translated code
+repo-translate --input ./my-repo --from ts --to python --run  # execute translated code (off by default)
 repo-translate --input ./my-repo --from ts --to python --in-place  # write beside the sources
 pytest         # full suite (unit + integration)
 pytest -m "not integration"   # fast lane only — mocked providers, no subprocesses/threads

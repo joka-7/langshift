@@ -375,21 +375,30 @@ class TestTranslateRepo:
         assert (out / "index.py").read_text() == "x = 1"
         assert "not run" in (report.files[0].run_output or "")
 
-    def test_execute_false_also_suppresses_the_test_suite_run(self, tmp_path):
-        """run_tests() executes generated code too, so --no-run has to cover it."""
+    def test_explicit_refusal_plus_test_run_is_rejected(self, tmp_path):
+        """run_tests() executes generated code too. An explicit execute=False is a
+        refusal, so it is never quietly overridden — the pair is an error."""
         (tmp_path / "index.ts").write_text("const x: number = 1;")
-        (tmp_path / "index.test.ts").write_text("test('x', () => {});")
-        out = tmp_path / "out"
         provider = MockProvider("x = 1")
 
-        with patch("repo_translator.agent._run_tests_with_retry") as run_tests:
-            report = translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                                    translate_manifests=False, verbose=False,
-                                    score_confidence=False, run_tests_after=True,
-                                    execute=False)
+        with pytest.raises(ValueError, match="contradicts"):
+            translate_repo(tmp_path, tmp_path / "out", "ts", "python", provider=provider,
+                           translate_manifests=False, verbose=False,
+                           score_confidence=False, run_tests_after=True, execute=False)
 
-        run_tests.assert_not_called()
-        assert report.tests_passed is None
+    def test_test_run_implies_execution_when_unspecified(self, tmp_path):
+        """Asking for the suite without mentioning --run must not silently do nothing."""
+        (tmp_path / "index.ts").write_text("const x: number = 1;")
+        (tmp_path / "index.test.ts").write_text("test('x', () => {});")
+        provider = MockProvider("x = 1")
+
+        with patch("repo_translator.agent._run_tests_with_retry",
+                   return_value=(True, "ok")) as run_tests:
+            translate_repo(tmp_path, tmp_path / "out", "ts", "python", provider=provider,
+                           translate_manifests=False, verbose=False,
+                           score_confidence=False, run_tests_after=True)
+
+        run_tests.assert_called_once()
 
     def test_in_place_skips_files_it_would_overwrite(self, tmp_path):
         """Translating into the source tree must never clobber a file the tool
@@ -599,8 +608,10 @@ class TestTranslateRepo:
         provider = MockProvider("this is not valid python !!!")
         provider.max_fix_attempts = 1
 
+        # execute=True: the exhaustion branch only exists on the run/retry path.
         translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                        translate_manifests=False, verbose=True, score_confidence=False)
+                        translate_manifests=False, verbose=True, score_confidence=False,
+                        execute=True)
 
         out_text = capsys.readouterr().out
         assert "after 1 attempts" in out_text
@@ -848,8 +859,10 @@ class TestTranslateRepoVerboseOutput:
         (tmp_path / "main.ts").write_text("const x = 1;")
         out = tmp_path / "out"
         provider = MockProvider("this is not valid python", "x = 1")
+        # execute=True: retrying requires a failed run to retry from.
         translate_repo(tmp_path, out, "ts", "python", provider=provider,
-                        translate_manifests=False, verbose=True, score_confidence=False)
+                        translate_manifests=False, verbose=True, score_confidence=False,
+                        execute=True)
         out_text = capsys.readouterr().out
         assert "retrying" in out_text
         assert "fixed in 2 attempt" in out_text

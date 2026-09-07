@@ -5,36 +5,21 @@ Translate an entire code repository from one programming language to another usi
 The agent:
 1. **Translates** dependency manifests (`package.json` → `requirements.txt` etc.)
 2. **Translates** every source file via Claude
-3. **Runs** the translated code automatically (where supported)
+3. **Runs** the translated code to check it works — opt-in via `--run`
 4. **Auto-fixes** runtime errors — up to 3 attempts per file
 5. **Saves** a detailed Markdown + JSON report
 
 ---
 
-## ⚠️ Before you run it: langshift executes the code the model writes
-
-The auto-fix loop works by *running* each translated file and feeding the error
-back to the model, so translation and execution are the same step. `_try_run()`
-executes every translated file with the target language's interpreter, and
-`--run-tests` runs the target's test runner over the output — which for some
-languages runs project-defined scripts of its own (`npm test`, `cargo test`).
-
-There is no sandbox. It runs as you, with your filesystem, network and
-credentials. Timeouts (15s per file, 120s per test run) bound how long it runs,
-not what it can do. Treat the repositories you translate as untrusted: their
-contents go into the prompt, so they can influence what gets generated and
-therefore what gets executed.
-
-**This is on by default.** Every run executes what it translates unless you pass
-`--no-run`, which turns execution off entirely: files are translated and written
-but never executed, so the auto-fix loop has nothing to feed back and quality
-drops. Otherwise run it on code you trust, or in a container or VM. For no
-execution *and* no network, combine `--no-run` with `--provider offline`.
-
-See [SECURITY.md](SECURITY.md) for the full threat model, including the web UI's
-localhost-only assumptions.
-
----
+> ### ⚠️ `--run` executes the code the model wrote
+>
+> Auto-fixing works by running each translated file and feeding the error back,
+> unsandboxed and as you. **Off by default** — without `--run` (or `--run-tests`,
+> which implies it) nothing generated is executed. Turn it on only for code you
+> trust, or inside a container; it markedly improves output, since nothing else
+> checks the translation actually runs.
+>
+> [SECURITY.md](SECURITY.md) has the full threat model.
 
 ## Supported languages
 
@@ -179,9 +164,10 @@ repo-translate --input ./my-repo --from ts --to python --no-manifest
 # Skip report
 repo-translate --input ./my-repo --from ts --to python --no-report
 
-# Never execute the translated code (no auto-run, no auto-fix, no test run).
-# Execution is ON by default — this is the only way to turn it off.
-repo-translate --input ./my-repo --from ts --to python --no-run
+# Run each translated file to check it works, feeding errors back for up to
+# 3 auto-fix attempts. OFF by default — nothing is executed without this
+# (or --run-tests, which implies it). --no-run is the explicit opposite.
+repo-translate --input ./my-repo --from ts --to python --run
 
 # Also run the translated test suite
 repo-translate --input ./my-repo --from ts --to python --run-tests
@@ -217,10 +203,10 @@ repo-translate \
   --quiet
 ```
 
-Defaults worth knowing: the translated code **is executed** (`--no-run` to stop
-it), output goes to a **sibling directory** (`--in-place` to write beside the
-sources), `--resume` is **on**, and `--run-tests` and `--cross-file-context` are
-**off**.
+Defaults worth knowing: the translated code is **not executed** (`--run`, or
+`--run-tests` which implies it), output goes to a **sibling directory**
+(`--in-place` to write beside the sources), `--resume` is **on**, and
+`--run-tests` and `--cross-file-context` are **off**.
 
 ---
 
