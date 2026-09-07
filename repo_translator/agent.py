@@ -423,33 +423,40 @@ def _translate_chunk(
     chunk_index: int | None = None,
     chunk_total: int | None = None,
     repo_context: str | None = None,
+    mode: str = "translate",
 ) -> str:
+    action = "translation" if mode == "translate" else "comments"
     fix_note = ""
     if error_context:
         fix_note = textwrap.dedent(f"""
-            The previous translation produced this runtime error:
+            The previous {action} produced this runtime error:
             ---
             {error_context}
             ---
-            Please fix the translation so it runs without errors.
+            Please fix it so the code runs without errors.
         """)
 
     test_note = ""
-    if is_test:
+    if is_test and mode == "translate":
         framework = TEST_FRAMEWORK_MAP.get((from_lang, to_lang), "the standard test framework")
         test_note = f"""
         - This is a TEST file. Translate test cases using {framework}.
         - Preserve all test names, assertions, and test structure.
         - Use {framework} idioms (describe/it, def test_, #[test], etc.).
         """
+    elif is_test:
+        test_note = """
+        - This is a TEST file. Comment what each test verifies, not how the test framework works.
+        """
 
     chunk_note = ""
     if chunk_total is not None and chunk_total > 1:
+        verb = "Translate" if mode == "translate" else "Comment"
         chunk_note = f"""
         - This is chunk {chunk_index} of {chunk_total} of ONE larger file, split only because
-          of its size. Translate just this chunk's code, exactly as given, with no added
+          of its size. {verb} just this chunk's code, exactly as given, with no added
           file-level framing (no extra imports, no repeated boilerplate). The chunks'
-          translations will be concatenated in order to form the final file.
+          {action} will be concatenated in order to form the final file.
         """
 
     # A single short line, not a multi-line block: it's interpolated inside
@@ -470,17 +477,35 @@ def _translate_chunk(
     # textwrap.dedent's common-prefix calculation and leak the template's
     # indentation into the fenced code block (breaks the offline provider,
     # which extracts the block verbatim).
-    instructions = textwrap.dedent(f"""
-        You are an expert programmer. Translate the following {from_lang} code to {to_lang}.
+    if mode == "translate":
+        instructions = textwrap.dedent(f"""
+            You are an expert programmer. Translate the following {from_lang} code to {to_lang}.
 
-        Rules:
-        - Output ONLY the translated code, no markdown fences, no explanation.
-        - Preserve the original logic, structure, and comments (translated).
-        - Use idiomatic {to_lang} patterns and standard library where possible.
-        - Replace language-specific imports/packages with {to_lang} equivalents.
-        - If a direct equivalent doesn't exist, write a clear TODO comment.
-        {test_note}{fix_note}{chunk_note}{repo_note}
-    """).strip()
+            Rules:
+            - Output ONLY the translated code, no markdown fences, no explanation.
+            - Preserve the original logic, structure, and comments (translated).
+            - Use idiomatic {to_lang} patterns and standard library where possible.
+            - Replace language-specific imports/packages with {to_lang} equivalents.
+            - If a direct equivalent doesn't exist, write a clear TODO comment.
+            {test_note}{fix_note}{chunk_note}{repo_note}
+        """).strip()
+    else:
+        instructions = textwrap.dedent(f"""
+            You are an expert {from_lang} programmer. Add clear, accurate comments to the
+            following {from_lang} code.
+
+            Rules:
+            - Output ONLY the annotated code, no markdown fences, no explanation.
+            - Do NOT change logic, structure, formatting, imports, or behavior — comments only.
+            - Add a doc-comment (docstring / JSDoc / Javadoc / /// / etc., whichever is
+              idiomatic for {from_lang}) to every class and every function/method: a one-line
+              summary, plus parameters/returns where the language convention calls for it.
+            - Add brief inline comments only on non-obvious logic. Comment *why*, not *what* —
+              skip comments that just restate the code.
+            - If a class or function already has a comment, tighten or correct it rather than
+              duplicating it.
+            {test_note}{fix_note}{chunk_note}{repo_note}
+        """).strip()
 
     prompt = f"{instructions}\n\nSource ({from_lang}):\n```\n{source_code}\n```"
     if repo_context:
@@ -497,26 +522,27 @@ def _translate_once(
     is_test: bool = False,
     error_context: str | None = None,
     repo_context: str | None = None,
+    mode: str = "translate",
 ) -> str:
     """
-    Translate one file's source. Transparent to callers: this always
-    returns one translated string per call, whether it took one provider
-    call or — for a file over CHUNK_THRESHOLD_CHARS — several, chunked by
-    _split_into_chunks and concatenated in order. repo_context, if given
-    (see _format_repo_map), is a read-only "here's the rest of the repo"
-    note included in every chunk's prompt — it isn't shared translation
-    state, just extra context for that one call.
+    Translate (or, if mode=="comment", annotate) one file's source.
+    Transparent to callers: this always returns one string per call, whether
+    it took one provider call or — for a file over CHUNK_THRESHOLD_CHARS —
+    several, chunked by _split_into_chunks and concatenated in order.
+    repo_context, if given (see _format_repo_map), is a read-only "here's
+    the rest of the repo" note included in every chunk's prompt — it isn't
+    shared state, just extra context for that one call.
     """
     chunks = _split_into_chunks(source_code, threshold=CHUNK_THRESHOLD_CHARS)
     if len(chunks) == 1:
         return _translate_chunk(
             provider, source_code, from_lang, to_lang, is_test, error_context,
-            repo_context=repo_context,
+            repo_context=repo_context, mode=mode,
         )
     return "".join(
         _translate_chunk(
             provider, chunk, from_lang, to_lang, is_test, error_context,
-            chunk_index=idx, chunk_total=len(chunks), repo_context=repo_context,
+            chunk_index=idx, chunk_total=len(chunks), repo_context=repo_context, mode=mode,
         )
         for idx, chunk in enumerate(chunks, 1)
     )
@@ -530,40 +556,71 @@ def _score_confidence(
     to_lang: str,
     attempts: int,
     run_ok: bool,
+    mode: str = "translate",
 ) -> tuple[int, str]:
-    """Ask the provider to score the translation quality 0-100."""
+    """Ask the provider to score the translation (or comment) quality 0-100."""
     todo_count = translated_code.lower().count("# todo") + translated_code.lower().count("// todo")
     src_excerpt   = source_code[:2000]   + ("…" if len(source_code)   > 2000 else "")
     trans_excerpt = translated_code[:2000] + ("…" if len(translated_code) > 2000 else "")
 
-    prompt = textwrap.dedent(f"""
-        You just translated a {from_lang} file to {to_lang}. Score the translation 0–100.
+    if mode == "translate":
+        prompt = textwrap.dedent(f"""
+            You just translated a {from_lang} file to {to_lang}. Score the translation 0–100.
 
-        Consider:
-        - Constructs with no direct equivalent ({from_lang} → {to_lang}): goroutines,
-          ownership, generics, async differences, etc.
-        - Cross-file imports that may be broken — this file was translated in isolation
-          with no knowledge of other files in the repo.
-        - TODO comments added: {todo_count}
-        - Auto-run: {"passed" if run_ok else "failed"}, attempts needed: {attempts}
-        - Structural distance between {from_lang} and {to_lang}
+            Consider:
+            - Constructs with no direct equivalent ({from_lang} → {to_lang}): goroutines,
+              ownership, generics, async differences, etc.
+            - Cross-file imports that may be broken — this file was translated in isolation
+              with no knowledge of other files in the repo.
+            - TODO comments added: {todo_count}
+            - Auto-run: {"passed" if run_ok else "failed"}, attempts needed: {attempts}
+            - Structural distance between {from_lang} and {to_lang}
 
-        Be honest about real-world usability. A file that runs but has broken cross-file
-        imports should score 40–60, not 90.
+            Be honest about real-world usability. A file that runs but has broken cross-file
+            imports should score 40–60, not 90.
 
-        Source ({from_lang}):
-        ```
-        {src_excerpt}
-        ```
+            Source ({from_lang}):
+            ```
+            {src_excerpt}
+            ```
 
-        Translation ({to_lang}):
-        ```
-        {trans_excerpt}
-        ```
+            Translation ({to_lang}):
+            ```
+            {trans_excerpt}
+            ```
 
-        Respond with JSON only, no markdown fences:
-        {{"score": <0-100>, "reason": "<one sentence>"}}
-    """).strip()
+            Respond with JSON only, no markdown fences:
+            {{"score": <0-100>, "reason": "<one sentence>"}}
+        """).strip()
+    else:
+        prompt = textwrap.dedent(f"""
+            You just added comments to a {from_lang} file. Score how clear and accurate the
+            added documentation is, 0–100.
+
+            Consider:
+            - Every class and function has an accurate doc-comment (summary, params/returns
+              where the language convention calls for it).
+            - Inline comments explain *why*, not *what* — no comments that just restate code.
+            - The underlying logic, structure, and behavior were left unchanged.
+            - Auto-run after commenting: {"passed" if run_ok else "failed"}, attempts
+              needed: {attempts}
+
+            Be honest. Comments that are vague, restate the code, or are missing on public
+            classes/functions should score 40–60, not 90.
+
+            Before:
+            ```
+            {src_excerpt}
+            ```
+
+            After (commented):
+            ```
+            {trans_excerpt}
+            ```
+
+            Respond with JSON only, no markdown fences:
+            {{"score": <0-100>, "reason": "<one sentence>"}}
+        """).strip()
 
     # Scoring is advisory -- a failure here must never sink an otherwise good
     # translation -- but the two ways it fails are different, and the reason is
@@ -877,6 +934,7 @@ def _run_tests_with_retry(
     verbose: bool,
     on_progress: Callable[[dict], None] | None,
     repo_map: dict[str, list[str]] | None = None,
+    mode: str = "translate",
 ) -> tuple[bool, str]:
     """
     Run the translated test suite, retrying like the source-file auto-fix
@@ -915,6 +973,7 @@ def _run_tests_with_retry(
                 translated_code = _translate_once(
                     provider, source_code, from_lang, to_lang,
                     is_test=True, error_context=test_output, repo_context=repo_context,
+                    mode=mode,
                 )
             except Exception as e:
                 if verbose:
@@ -942,8 +1001,19 @@ def translate_repo(
     cross_file_context: bool = False,
     execute: bool | None = None,
     on_progress: Callable[[dict], None] | None = None,
+    mode: str = "translate",
 ) -> TranslationReport:
     """
+    mode: "translate" (default) or "comment". In "comment" mode, to_lang must
+    equal from_lang — the file's own language is preserved and the provider
+    is asked to add doc-comments to classes/functions and brief inline
+    comments to non-obvious logic, without changing logic, structure, or
+    formatting. Dependency manifests are never commented, so
+    translate_manifests is forced off. Everything else (chunking, auto-run
+    verification, auto-fix retries, checkpoint/resume, --in-place) behaves
+    identically to translate mode, since the language — and so every
+    extension/runner/test_runner lookup — doesn't change.
+
     on_progress, if given, is called with a dict for each notable event:
       {"type": "manifest_done", "count": int}
       {"type": "file_start", "index": int, "total": int, "path": str, "is_test": bool}
@@ -981,14 +1051,32 @@ def translate_repo(
         if on_progress:
             on_progress(event)
 
+    if mode not in ("translate", "comment"):
+        raise ValueError(f"translate_repo: unsupported mode {mode!r} (expected translate/comment)")
+
     from_lang = resolve_language(from_lang)
     to_lang   = resolve_language(to_lang)
+
+    # Comment mode annotates a file in its own language — there's nothing
+    # for to_lang to mean other than from_lang, and letting a mismatch
+    # through would translate and then silently apply the wrong prompt.
+    if mode == "comment" and to_lang != from_lang:
+        raise ValueError(
+            f"mode='comment' requires to_lang == from_lang, got {from_lang!r} vs {to_lang!r}."
+        )
+
+    # Comments don't apply to a dependency manifest (package.json etc.) —
+    # there's no class/function to document — so manifest translation is
+    # never attempted in comment mode, regardless of the caller's setting.
+    if mode == "comment":
+        translate_manifests = False
 
     report = TranslationReport(
         from_lang=from_lang,
         to_lang=to_lang,
         input_path=str(repo_path),
         output_path=str(output_path),
+        mode=mode,
     )
 
     # Running the translated test suite executes translated code, so asking for it
@@ -1108,6 +1196,7 @@ def translate_repo(
                 translated_code = _translate_once(
                     provider, source_code, from_lang, to_lang,
                     is_test=is_test, error_context=error_ctx, repo_context=repo_context,
+                    mode=mode,
                 )
             except Exception as e:
                 if verbose:
@@ -1145,7 +1234,7 @@ def translate_repo(
                 if score_confidence:
                     confidence, confidence_reason = _score_confidence(
                         provider, source_code, final_code,
-                        from_lang, to_lang, attempts, run_ok,
+                        from_lang, to_lang, attempts, run_ok, mode=mode,
                     )
 
                 report.files.append(FileResult(
@@ -1178,7 +1267,7 @@ def translate_repo(
                 if score_confidence:
                     confidence, confidence_reason = _score_confidence(
                         provider, source_code, final_code,
-                        from_lang, to_lang, attempts, run_ok,
+                        from_lang, to_lang, attempts, run_ok, mode=mode,
                     )
 
                 report.files.append(FileResult(
@@ -1205,7 +1294,7 @@ def translate_repo(
     if execute and run_tests_after and (test_files or not to_test_patterns):
         passed, test_output = _run_tests_with_retry(
             provider, repo_path, output_path, from_lang, to_lang,
-            test_files, verbose, on_progress, repo_map=repo_map,
+            test_files, verbose, on_progress, repo_map=repo_map, mode=mode,
         )
         report.tests_passed = passed
         report.test_output  = test_output
