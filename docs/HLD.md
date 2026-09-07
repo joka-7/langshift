@@ -96,6 +96,22 @@ Input repo
             TranslationReport.save() → .json + .md
 ```
 
+### Other modes (`--mode`)
+
+`translate_repo()`'s pipeline above is `--mode translate` (the default). Two more modes are
+reachable the same way, both working on the repo in its own language (no `--to`, and neither
+supported with the `offline` provider):
+
+- **`--mode comment`** — same `translate_repo()` pipeline, `to_lang` forced equal to
+  `from_lang`. The manifest phase is skipped; the translation phase's prompt asks for
+  doc-comments instead of a language change, so chunking/auto-run/auto-fix/checkpoint/`--in-place`
+  all apply unmodified (same language ⇒ same extensions/runner/test_runner).
+- **`--mode diagram`** — a separate, much shorter pipeline in `diagram.py`: build the repo map
+  (`agent._build_repo_map`, the same heuristic `--cross-file-context` uses) once, then one
+  provider call per diagram type (static/dynamic/hld/lld) asking for a mermaid + draw.io
+  rendering, parsed and retried up to `provider.max_fix_attempts` on a malformed response. No
+  per-file loop, no auto-run (there's no code to run) — see `generate_diagrams()`.
+
 ### Web UI request/response flow
 
 ```
@@ -120,6 +136,7 @@ Browser ──GET  /api/jobs─────────────► FastAPI �
 | Providers | `repo_translator/providers/` | `LLMProvider` ABC + 7 backends + rate-limit backoff (`retry.py`) |
 | Offline translator | `repo_translator/offline/` | Rule-based, network-free transform registry (currently `ts/js → python`) |
 | Manifest Translator | `repo_translator/manifest.py` | Dependency file detection and translation |
+| Diagram Generator | `repo_translator/diagram.py` | `--mode diagram`: repo-map-driven static/dynamic/HLD/LLD diagram generation (mermaid + draw.io), own `DiagramReport`/`DiagramResult` |
 | Report | `repo_translator/report.py` | `TranslationReport` / `FileResult` dataclasses, JSON + Markdown output |
 | Web UI backend | `repo_translator/webui/` | FastAPI routes (`main.py`) + background job manager & SSE (`jobs.py`) |
 | Web UI frontend | `frontend/` | React + Vite SPA: form → estimate → live progress → report → output browser → history |

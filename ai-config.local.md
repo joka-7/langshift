@@ -21,6 +21,8 @@ repo-translate --input ./my-repo --from ts --to python --run-tests  # also run t
 repo-translate --input ./my-ts-repo --from ts --to python --provider offline  # no API key needed
 repo-translate --input ./my-repo --from ts --to python --run  # execute translated code (off by default)
 repo-translate --input ./my-repo --from ts --to python --in-place  # write beside the sources
+repo-translate --input ./my-repo --from ts --mode comment  # add doc-comments, no translation
+repo-translate --input ./my-repo --from ts --mode diagram  # static/dynamic/HLD/LLD diagrams
 pytest         # full suite (unit + integration)
 pytest -m "not integration"   # fast lane only — mocked providers, no subprocesses/threads
 ruff check .   # lint
@@ -37,6 +39,8 @@ Multiple LLM providers are supported beyond Claude — see `repo_translator/prov
 repo_translator/
 ├── agent.py       — core logic: file collection, provider calls, auto-fix loop, test detection
 ├── manifest.py    — translates dependency files (package.json → requirements.txt etc.)
+├── diagram.py     — `--mode diagram`: repo-map-driven static/dynamic/HLD/LLD diagram
+│                    generation (mermaid + draw.io XML), own DiagramReport/DiagramResult
 ├── report.py      — TranslationReport dataclass, saves .json + .md summary
 ├── cli.py         — argparse CLI entry point
 ├── cpp_test_runner.py — runs translated C++ tests, via CMake+ctest when there's a
@@ -73,6 +77,7 @@ tests/
 ├── helpers.py       — shared provider doubles (MockProvider, CapturingProvider)
 ├── test_agent.py    — unit tests, mocked providers
 ├── test_manifest.py — unit tests, mocked providers
+├── test_diagram.py  — unit tests for diagram.py, mocked providers
 ├── test_offline.py  — unit tests for the offline ts→py transformer
 ├── test_cpp_offline.py — unit tests for the offline cpp/c→py transformer
 ├── test_cpp_test_runner.py — unit tests for cpp_test_runner.py (subprocess mocked)
@@ -133,6 +138,24 @@ pyproject.toml — package config, entry points: repo-translate = repo_translato
   (`--cross-file-context`, off by default), every prompt gets a read-only "repo map" of the
   other files' top-level symbols — see TODO #1 below — but there's still no state carried
   *between* file translations, just that one extra note per prompt.
+
+### Other modes (`--mode`)
+`translate_repo()`'s flow above is `--mode translate` (the default). Two more modes are reachable
+the same way, both working on the repo in its own language (`--from` only, no `--to`) and neither
+supported with `--provider offline` (its transformer registry is translation-pair-keyed):
+- **`--mode comment`** — same `translate_repo()` pipeline with `to_lang` forced equal to
+  `from_lang` and the manifest phase skipped; the prompt (`_translate_chunk(..., mode="comment")`)
+  asks for doc-comments on every class/function plus brief inline comments, not a language
+  change, so it's the caller's choice whether logic changed, not the model's — chunking, auto-run
+  verification, auto-fix retries, checkpoint/resume, and `--in-place` all apply unmodified, since
+  same-language means every extension/runner/test_runner lookup is unchanged.
+- **`--mode diagram`** — a separate, much shorter pipeline (`diagram.py`'s `generate_diagrams()`):
+  build one repo map for the whole run (`agent._build_repo_map()`, the same heuristic
+  `--cross-file-context` uses), then one provider call per diagram type in `DIAGRAM_TYPES`
+  (`static`/`dynamic`/`hld`/`lld` — narrow with `--diagram-types`) asking for a mermaid + draw.io
+  rendering, retried up to `provider.max_fix_attempts` on a response missing one of the required
+  sections. Writes `<output>/diagrams/<type>.md` + `<type>.drawio` per type; one type failing to
+  parse doesn't abort the others.
 
 ### Supported languages (13 total)
 typescript, javascript, python, java, go, rust, ruby, csharp, php, kotlin, swift, cpp, c

@@ -7,6 +7,7 @@
 | `repo_translator/cli.py` | ~185 | `main()`, `build_parser()` |
 | `repo_translator/agent.py` | ~680 | `translate_repo()`, `estimate_translation()`, `collect_files()`, `resolve_language()`, `LANGUAGE_META`, `PRICING` |
 | `repo_translator/manifest.py` | ~110 | `translate_manifest()`, `_find_manifests()` |
+| `repo_translator/diagram.py` | ~320 | `generate_diagrams()`, `DiagramReport`, `DiagramResult`, `DIAGRAM_TYPES` |
 | `repo_translator/report.py` | ~215 | `TranslationReport`, `FileResult` |
 | `repo_translator/providers/__init__.py` | ~60 | `SUPPORTED_PROVIDERS`, `make_provider()`, `make_offline_provider()` |
 | `repo_translator/providers/base.py` | ~10 | `LLMProvider` (ABC) |
@@ -53,9 +54,28 @@
 | `manifest_translated` | `list[str]` | paths of written manifest files |
 | `tests_passed` | `bool \| None` | `None` = test phase not run |
 | `test_output` | `str \| None` | combined stdout/stderr from test run |
+| `mode` | `str` | `"translate"` (default) or `"comment"` — display only, defaults preserve old JSON shape |
 
 Computed properties: `total`, `translated`, `failed`, `skipped`, `needed_retry`,
 `high_confidence` (confidence ≥ `_CONFIDENCE_THRESHOLD` = 70), `needs_review` (below it).
+
+### `DiagramResult` / `DiagramReport`  _(diagram.py)_
+
+`--mode diagram`'s own report types — a diagram run has no per-file results, confidence, or
+test output, so it isn't folded into `TranslationReport`.
+
+| `DiagramResult` field | Type | Notes |
+|---|---|---|
+| `diagram_type` | `str` | one of `DIAGRAM_TYPES` (`static`/`dynamic`/`hld`/`lld`) |
+| `status` | `str` | `"ok"` or `"failed"` |
+| `attempts` | `int` | 1–`provider.max_fix_attempts` |
+| `error` | `str \| None` | last parse/provider error if failed |
+| `mermaid_path` | `str \| None` | path to the written `<type>.md` |
+| `drawio_path` | `str \| None` | path to the written `<type>.drawio` |
+
+`DiagramReport`: `lang`, `input_path`, `output_path`, `started_at`, `elapsed_seconds`,
+`results: list[DiagramResult]`, computed `succeeded`/`failed`; `print_summary()` and
+`save()` → `diagram_report.json` mirror `TranslationReport`'s shape.
 
 ### `LANGUAGE_META`  _(agent.py)_
 
@@ -271,6 +291,29 @@ Finds dependency files via `_find_manifests()`, sends each to the provider with 
 manifest-specific prompt, writes the result to `TARGET_MANIFEST[to_lang]` in the output
 directory. Returns a dict with `found`, `translated`, `skipped`.
 
+### `generate_diagrams()`  _(diagram.py)_
+
+```python
+def generate_diagrams(
+    repo_path: Path,
+    output_path: Path,
+    lang: str,
+    provider: LLMProvider,
+    diagram_types: tuple[str, ...] = DIAGRAM_TYPES,
+    verbose: bool = True,
+    on_progress: Callable[[dict], None] | None = None,
+) -> DiagramReport
+```
+
+`--mode diagram`'s entry point. `collect_files()` + `agent._build_repo_map()` build one repo
+map for the whole run (reused across every diagram type — no per-file loop). For each requested
+`diagram_type`: `_build_diagram_prompt()` → `complete_with_backoff()` →
+`_parse_diagram_response()`, retried up to `provider.max_fix_attempts` on a `ValueError` (missing
+`## Explanation`/`## Mermaid`/`## Draw.io XML` section), with the parse error fed back as the
+next attempt's `error_context`. Success writes `<output>/diagrams/<type>.md` (explanation +
+mermaid fence) and `<type>.drawio` (raw XML); exhausting attempts records
+`DiagramResult(status="failed")` for that type only — one bad type never aborts the others.
+
 ---
 
 ## Retry / Fix Loop
@@ -323,9 +366,11 @@ Source ({from_lang}):
 | Flag | Short | Default | Effect |
 |---|---|---|---|
 | `--input` | `-i` | required | Source repo path |
+| `--mode` | — | `translate` | `translate` \| `comment` \| `diagram` — see below |
 | `--from` | `-f` | required | Source language |
-| `--to` | `-t` | required | Target language |
-| `--output` | `-o` | `<input>_<to_lang>` | Output directory |
+| `--to` | `-t` | required for `--mode translate`, rejected otherwise | Target language |
+| `--diagram-types` | — | all four | Comma-separated subset of `DIAGRAM_TYPES`, `--mode diagram` only |
+| `--output` | `-o` | `<input>_<to_lang>` (`_commented`/`_diagrams` for the other modes) | Output directory |
 | `--provider` | `-p` | `claude` | One of `SUPPORTED_PROVIDERS` |
 | `--model` | `-m` | provider default | Model id/name |
 | `--base-url` | — | none | Required for `--provider openai-compat` |

@@ -233,6 +233,55 @@ and `.md`. Add them to `.gitignore` if you translate in place regularly.
 
 ---
 
+## Modes
+
+`--mode` picks what the agent does with the repo. `translate` (the default, described above)
+is the only mode that changes language — `comment` and `diagram` both work on the repo **in its
+own language** (`--from` only, no `--to`), and neither is supported with `--provider offline`
+(its rule-based transformer is a translation-pair registry — it has nothing to say about
+annotating a file in its own language or describing a repo's architecture).
+
+### `--mode comment` — annotate a repo with doc-comments
+
+Adds a doc-comment (docstring / JSDoc / Javadoc / `///` / etc., whichever is idiomatic for the
+language) to every class and function, plus brief inline comments on non-obvious logic — logic,
+structure, formatting, and imports are left untouched. Reuses the whole translate pipeline
+(chunking for large files, auto-run verification + auto-fix retries where the language has a
+runner, checkpoint/resume, `--in-place`), since annotating in the same language means every one
+of those already works unmodified.
+
+```bash
+repo-translate --input ./my-repo --from ts --mode comment                 # → ./my-repo_commented
+repo-translate --input ./my-repo --from ts --mode comment --in-place --run  # comment beside sources, verify they still run
+```
+
+### `--mode diagram` — generate architecture diagrams
+
+Analyzes the repo's structure (files + their top-level symbols, the same regex-based heuristic
+`--cross-file-context` uses) and asks the provider for diagrams at four levels: `static` (module/
+class structure), `dynamic` (a key runtime flow), `hld` (high-level component boundaries), and
+`lld` (detailed class/method contracts for the most central components). Narrow the set with
+`--diagram-types`. Each diagram is written as **both** a mermaid `.md` (renders natively on
+GitHub) and a draw.io `.drawio` XML file (open at [diagrams.net](https://app.diagrams.net) →
+File → Open, or drag the file onto the canvas).
+
+```bash
+repo-translate --input ./my-repo --from ts --mode diagram                        # all four levels
+repo-translate --input ./my-repo --from ts --mode diagram --diagram-types static,hld
+```
+
+```
+my-repo_diagrams/
+├── diagrams/
+│   ├── static.md   static.drawio
+│   ├── dynamic.md  dynamic.drawio
+│   ├── hld.md      hld.drawio
+│   └── lld.md      lld.drawio
+└── diagram_report.json
+```
+
+---
+
 ## Output structure
 
 ```
@@ -245,6 +294,10 @@ my-repo_python/
 ├── translation_report.md     ← human-readable summary
 └── translation_report.json   ← machine-readable report
 ```
+
+`--mode comment` uses the same layout (default output dir `<input>_commented`) with
+`translation_report.*` describing comments added rather than files translated. `--mode diagram`
+uses the `diagrams/` layout shown above (default output dir `<input>_diagrams`).
 
 ---
 
