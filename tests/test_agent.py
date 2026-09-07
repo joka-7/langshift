@@ -1796,3 +1796,133 @@ class TestTranslateRepoCrossFileContext:
         # should still carry the repo map (mentioning a.py's "foo").
         assert "a.py" in provider.last_prompt
         assert "foo" in provider.last_prompt
+
+
+# ─────────────────────────────────────────────
+# mode="comment" — annotate a repo in its own language
+# ─────────────────────────────────────────────
+
+class TestCommentModePrompt:
+    def test_prompt_asks_to_comment_not_translate(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "def add(a, b):\n    return a + b\n", "python", "python", mode="comment",
+        )
+        prompt = provider.last_prompt
+        assert "Add clear, accurate comments" in prompt
+        assert "Translate the following" not in prompt
+        assert "Do NOT change logic, structure, formatting, imports, or behavior" in prompt
+
+    def test_default_mode_is_translate(self):
+        provider = CapturingProvider()
+        _translate_once(provider, "const x = 1;", "typescript", "python")
+        assert "Translate the following" in provider.last_prompt
+
+    def test_test_note_in_comment_mode_does_not_mention_framework(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "test('adds', () => {});", "typescript", "typescript",
+            is_test=True, mode="comment",
+        )
+        assert "TEST file" in provider.last_prompt
+        assert "pytest" not in provider.last_prompt
+
+    def test_fix_note_uses_generic_wording_in_comment_mode(self):
+        provider = CapturingProvider()
+        _translate_once(
+            provider, "def f(): pass", "python", "python", mode="comment",
+            error_context="SyntaxError: bad indent",
+        )
+        assert "SyntaxError: bad indent" in provider.last_prompt
+        assert "previous comments produced this runtime error" in provider.last_prompt
+
+
+class TestScoreConfidenceCommentMode:
+    def test_comment_mode_uses_comment_quality_wording(self):
+        resp = json.dumps({"score": 90, "reason": "clear docstrings"})
+        provider = MockProvider(resp)
+
+        score, reason = _score_confidence(
+            provider, "def f(): pass", 'def f():\n    """Does nothing."""\n    pass',
+            "python", "python", 1, True, mode="comment",
+        )
+
+        assert score == 90
+        assert reason == "clear docstrings"
+        assert "added comments" in provider.calls[0]
+        assert "translated a" not in provider.calls[0]
+
+
+class TestCommentMode:
+    def test_requires_to_lang_equal_from_lang(self, tmp_path):
+        (tmp_path / "a.py").write_text("def f():\n    pass\n")
+        with pytest.raises(ValueError, match="to_lang == from_lang"):
+            translate_repo(
+                tmp_path, tmp_path / "out", "python", "javascript",
+                provider=MockProvider("x"), mode="comment",
+                translate_manifests=False, verbose=False, score_confidence=False,
+            )
+
+    def test_rejects_unsupported_mode(self, tmp_path):
+        with pytest.raises(ValueError, match="unsupported mode"):
+            translate_repo(
+                tmp_path, tmp_path / "out", "python", "python",
+                provider=MockProvider("x"), mode="diagram",
+                translate_manifests=False, verbose=False, score_confidence=False,
+            )
+
+    def test_annotates_in_the_same_language(self, tmp_path):
+        (tmp_path / "a.py").write_text("def add(a, b):\n    return a + b\n")
+        out = tmp_path / "out"
+        commented = 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n'
+        provider = MockProvider(commented)
+
+        report = translate_repo(
+            tmp_path, out, "python", "python", provider=provider, mode="comment",
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+
+        assert report.mode == "comment"
+        assert report.from_lang == report.to_lang == "python"
+        assert (out / "a.py").read_text() == commented
+
+    def test_manifest_translation_forced_off(self, tmp_path):
+        (tmp_path / "a.py").write_text("def f():\n    pass\n")
+        (tmp_path / "requirements.txt").write_text("requests==2.0\n")
+        out = tmp_path / "out"
+        provider = MockProvider('def f():\n    """Does nothing."""\n    pass\n')
+
+        with patch("repo_translator.agent.translate_manifest") as mock_manifest:
+            report = translate_repo(
+                tmp_path, out, "python", "python", provider=provider, mode="comment",
+                translate_manifests=True, verbose=False, score_confidence=False,
+            )
+
+        mock_manifest.assert_not_called()
+        assert report.manifest_translated == []
+
+    def test_auto_fix_retry_loop_still_applies(self, tmp_path):
+        # Same shape as translate mode's auto-fix loop: to_lang == from_lang
+        # means the runner/retry infra is untouched by mode="comment".
+        (tmp_path / "a.py").write_text("def f():\n    pass\n")
+        out = tmp_path / "out"
+        provider = MockProvider(
+            "this is not valid python !!!",
+            'def f():\n    """Does nothing."""\n    pass\n',
+        )
+
+        report = translate_repo(
+            tmp_path, out, "python", "python", provider=provider, mode="comment",
+            translate_manifests=False, verbose=False, score_confidence=False, execute=True,
+        )
+
+        assert report.files[0].status == "ok_with_warnings"
+        assert report.files[0].attempts == 2
+
+    def test_report_mode_defaults_to_translate(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const x = 1;")
+        report = translate_repo(
+            tmp_path, tmp_path / "out", "ts", "python", provider=MockProvider("x = 1"),
+            translate_manifests=False, verbose=False, score_confidence=False,
+        )
+        assert report.mode == "translate"

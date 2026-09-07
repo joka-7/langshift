@@ -155,6 +155,127 @@ class TestMainValidation:
 
 
 # ─────────────────────────────────────────────
+# main() — --mode validation
+# ─────────────────────────────────────────────
+
+class TestMainModeValidation:
+    def test_translate_mode_requires_to(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "--to is required" in capsys.readouterr().out
+
+    def test_comment_mode_rejects_to(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts", "--to", "python",
+            "--mode", "comment",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "--to is not used" in capsys.readouterr().out
+
+    def test_diagram_mode_rejects_to(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts", "--to", "python",
+            "--mode", "diagram",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "--to is not used" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("mode", ["comment", "diagram"])
+    def test_offline_provider_rejected_for_non_translate_modes(
+        self, tmp_path, monkeypatch, capsys, mode,
+    ):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+            "--mode", mode, "--provider", "offline",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "does not support" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("mode", ["comment", "diagram"])
+    def test_cross_file_context_rejected_for_non_translate_modes(
+        self, tmp_path, monkeypatch, capsys, mode,
+    ):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+            "--mode", mode, "--cross-file-context",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "--cross-file-context is not supported" in capsys.readouterr().out
+
+    def test_diagram_types_rejected_outside_diagram_mode(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts", "--to", "python",
+            "--diagram-types", "static",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "--diagram-types only applies" in capsys.readouterr().out
+
+    def test_unknown_diagram_type_exits_1(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+            "--mode", "diagram", "--diagram-types", "static,bogus",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "unknown diagram type" in capsys.readouterr().out.lower()
+
+    def test_diagram_mode_rejects_in_place(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+            "--mode", "diagram", "--in-place",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "--in-place is not supported" in capsys.readouterr().out
+
+    def test_diagram_mode_rejects_run_tests(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+            "--mode", "diagram", "--run-tests",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "not supported with --mode diagram" in capsys.readouterr().out
+
+    def test_diagram_mode_rejects_run(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+            "--mode", "diagram", "--run",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "not supported with --mode diagram" in capsys.readouterr().out
+
+    def test_diagram_mode_rejects_estimate(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(tmp_path), "--from", "ts",
+            "--mode", "diagram", "--estimate",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "--estimate is not supported" in capsys.readouterr().out
+
+
+# ─────────────────────────────────────────────
 # main() — output path + exit codes
 # ─────────────────────────────────────────────
 
@@ -249,6 +370,98 @@ class TestMainOutputPathAndExitCode:
             with pytest.raises(SystemExit):
                 cli.main()
         report.save.assert_called_once()
+
+
+# ─────────────────────────────────────────────
+# main() — --mode comment / --mode diagram dispatch
+# ─────────────────────────────────────────────
+
+class TestMainModeDispatch:
+    def test_comment_mode_default_output_dir(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "myrepo"
+        input_dir.mkdir()
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(input_dir), "--from", "ts",
+            "--mode", "comment", "--provider", "claude", "--no-report",
+        ])
+        with patch("repo_translator.cli.translate_repo", return_value=_report()) as mock_translate, \
+             patch("repo_translator.cli.make_provider", return_value=MagicMock()):
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+        assert exc.value.code == 0
+        kwargs = mock_translate.call_args.kwargs
+        assert kwargs["output_path"] == input_dir.parent / "myrepo_commented"
+        assert kwargs["mode"] == "comment"
+        assert kwargs["from_lang"] == "ts"
+        assert kwargs["to_lang"] == "ts"
+
+    def test_diagram_mode_default_output_dir_and_dispatch(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "myrepo"
+        input_dir.mkdir()
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(input_dir), "--from", "ts",
+            "--mode", "diagram", "--provider", "claude", "--no-report",
+        ])
+        diagram_report = MagicMock()
+        diagram_report.failed = 0
+        with patch("repo_translator.cli.generate_diagrams",
+                    return_value=diagram_report) as mock_diagrams, \
+             patch("repo_translator.cli.make_provider", return_value=MagicMock()):
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+        assert exc.value.code == 0
+        kwargs = mock_diagrams.call_args.kwargs
+        assert kwargs["output_path"] == input_dir.parent / "myrepo_diagrams"
+        assert kwargs["lang"] == "ts"
+        assert kwargs["diagram_types"] == cli.DIAGRAM_TYPES
+        diagram_report.print_summary.assert_called_once()
+
+    def test_diagram_mode_respects_diagram_types_subset(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "myrepo"
+        input_dir.mkdir()
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(input_dir), "--from", "ts",
+            "--mode", "diagram", "--provider", "claude", "--no-report",
+            "--diagram-types", "static,lld",
+        ])
+        diagram_report = MagicMock()
+        diagram_report.failed = 0
+        with patch("repo_translator.cli.generate_diagrams",
+                    return_value=diagram_report) as mock_diagrams, \
+             patch("repo_translator.cli.make_provider", return_value=MagicMock()):
+            with pytest.raises(SystemExit):
+                cli.main()
+        assert mock_diagrams.call_args.kwargs["diagram_types"] == ("static", "lld")
+
+    def test_diagram_mode_exit_code_1_when_failed(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "myrepo"
+        input_dir.mkdir()
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(input_dir), "--from", "ts",
+            "--mode", "diagram", "--provider", "claude", "--no-report",
+        ])
+        diagram_report = MagicMock()
+        diagram_report.failed = 1
+        with patch("repo_translator.cli.generate_diagrams", return_value=diagram_report), \
+             patch("repo_translator.cli.make_provider", return_value=MagicMock()):
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+        assert exc.value.code == 1
+
+    def test_diagram_mode_saves_report_unless_no_report(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "myrepo"
+        input_dir.mkdir()
+        monkeypatch.setattr(sys, "argv", [
+            "repo-translate", "--input", str(input_dir), "--from", "ts",
+            "--mode", "diagram", "--provider", "claude",
+        ])
+        diagram_report = MagicMock()
+        diagram_report.failed = 0
+        with patch("repo_translator.cli.generate_diagrams", return_value=diagram_report), \
+             patch("repo_translator.cli.make_provider", return_value=MagicMock()):
+            with pytest.raises(SystemExit):
+                cli.main()
+        diagram_report.save.assert_called_once()
 
 
 # ─────────────────────────────────────────────

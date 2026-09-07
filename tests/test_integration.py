@@ -118,3 +118,29 @@ class TestCliErrorHandling:
         )
         assert result.returncode != 0
         assert "no offline transformer" in (result.stdout + result.stderr).lower()
+
+    def test_comment_mode_rejects_offline_provider(self, ts_repo, tmp_path):
+        # The offline transformer registry is keyed by translation pairs
+        # (typescript:python etc.) — it has nothing to say about annotating
+        # a file in its own language, so the CLI refuses the combination
+        # up front rather than handing offline a prompt it can't handle.
+        result = run_cli(
+            "--input", str(ts_repo),
+            "--from", "ts",
+            "--mode", "comment",
+            "--output", str(tmp_path / "out"),
+            "--provider", "offline",
+        )
+        assert result.returncode != 0
+        assert "does not support" in result.stdout.lower()
+
+    def test_diagram_mode_rejects_offline_provider(self, ts_repo, tmp_path):
+        result = run_cli(
+            "--input", str(ts_repo),
+            "--from", "ts",
+            "--mode", "diagram",
+            "--output", str(tmp_path / "out"),
+            "--provider", "offline",
+        )
+        assert result.returncode != 0
+        assert "does not support" in result.stdout.lower()
