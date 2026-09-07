@@ -46,6 +46,9 @@ class TranslationReport:
     manifest_translated: list[str] = field(default_factory=list)
     tests_passed: bool | None = None
     test_output: str | None = None
+    # "translate" (default) or "comment". Kept last with a default so
+    # existing callers/JSON consumers are unaffected; only changes display.
+    mode: str = "translate"
 
     # ------------------------------------------------------------------ #
     # Computed properties
@@ -89,15 +92,21 @@ class TranslationReport:
     # ------------------------------------------------------------------ #
     def print_summary(self) -> None:
         status_icon = "✅" if self.failed == 0 else "⚠️ "
+        title = "Translation Report" if self.mode == "translate" else "Comment Report"
+        lang_line = (
+            f"   From      : {self.from_lang}\n   To        : {self.to_lang}"
+            if self.mode == "translate"
+            else f"   Language  : {self.from_lang} (comments added, code unchanged)"
+        )
         print(f"""
   ══════════════════════════════════════════════
-   {status_icon}  Translation Report
+   {status_icon}  {title}
   ══════════════════════════════════════════════
-   From      : {self.from_lang}
-   To        : {self.to_lang}
+{lang_line}
    Duration  : {self.elapsed_seconds:.1f}s
 
-   Files     : {self.translated} / {self.total} translated""")
+   Files     : {self.translated} / {self.total} """
+              f"""{"translated" if self.mode == "translate" else "commented"}""")
 
         if self.skipped:
             print(f"   Skipped   : {self.skipped} (empty files)")
@@ -137,6 +146,7 @@ class TranslationReport:
         # JSON
         json_path = report_dir / "translation_report.json"
         data = {
+            "mode": self.mode,
             "from_lang": self.from_lang,
             "to_lang": self.to_lang,
             "input_path": self.input_path,
@@ -177,16 +187,21 @@ class TranslationReport:
             if scored else ""
         )
 
+        lang_rows = (
+            [f"| **From** | `{self.from_lang}` |", f"| **To** | `{self.to_lang}` |"]
+            if self.mode == "translate"
+            else [f"| **Language** | `{self.from_lang}` (comments added, code unchanged) |"]
+        )
         lines = [
-            "# Translation Report",
+            "# Translation Report" if self.mode == "translate" else "# Comment Report",
             "",
             "| | |",
             "|---|---|",
-            f"| **From** | `{self.from_lang}` |",
-            f"| **To** | `{self.to_lang}` |",
+            *lang_rows,
             f"| **Date** | {self.started_at} |",
             f"| **Duration** | {self.elapsed_seconds:.1f}s |",
-            f"| **Files translated** | {self.translated} / {self.total} |",
+            f"| **Files {'translated' if self.mode == 'translate' else 'commented'}** "
+            f"| {self.translated} / {self.total} |",
             f"| **Failed** | {self.failed} |",
             f"| **Auto-fixed** | {self.needed_retry} |",
         ]
@@ -200,7 +215,8 @@ class TranslationReport:
             ] + [f"- `{m}`" for m in self.manifest_translated] + [""]
 
         if ok_files:
-            lines += ["## ✅ Translated Files", ""]
+            heading = "Translated Files" if self.mode == "translate" else "Commented Files"
+            lines += [f"## ✅ {heading}", ""]
             for f in ok_files:
                 suffix = " *(needed retry)*" if f.attempts > 1 else ""
                 suffix += f" *(split into {f.chunks} chunks)*" if f.chunks else ""
