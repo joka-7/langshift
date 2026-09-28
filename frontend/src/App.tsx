@@ -134,10 +134,13 @@ function App() {
         </>
       )}
 
-      <footer className="row app-footer">
-        <a href="https://github.com/joka-7" target="_blank" rel="noreferrer" aria-label="GitHub">GitHub</a>
-        <a href="https://jk-dev-7.vercel.app" target="_blank" rel="noreferrer" aria-label="jk.dev portfolio">🌐 Site</a>
-        <a href="https://github.com/joka-7/langshift" target="_blank" rel="noreferrer" aria-label="View repository">View repo</a>
+      <footer className="app-footer">
+        <p className="app-footer-credit">Built by joka-7</p>
+        <div className="row app-footer-links">
+          <a href="https://github.com/joka-7" target="_blank" rel="noreferrer" aria-label="GitHub">GitHub</a>
+          <a href="https://jk-dev-7.vercel.app" target="_blank" rel="noreferrer" aria-label="jk.dev portfolio">🌐 Site</a>
+          <a href="https://github.com/joka-7/langshift" target="_blank" rel="noreferrer" aria-label="View repository">View repo</a>
+        </div>
       </footer>
     </div>
   )
