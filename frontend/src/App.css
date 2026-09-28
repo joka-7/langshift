@@ -19,6 +19,14 @@ nav button {
   margin-left: 8px;
 }
 
+.app-footer {
+  justify-content: center;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, #eee);
+  font-size: 13px;
+}
+
 nav button.active {
   font-weight: 600;
   border-bottom: 2px solid var(--accent, #5b5fc7);
