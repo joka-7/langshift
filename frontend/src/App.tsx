@@ -140,6 +140,8 @@ function App() {
           <a href="https://github.com/joka-7" target="_blank" rel="noreferrer" aria-label="GitHub">GitHub</a>
           <a href="https://jk-dev-7.vercel.app" target="_blank" rel="noreferrer" aria-label="jk.dev portfolio">🌐 Site</a>
           <a href="https://github.com/joka-7/langshift" target="_blank" rel="noreferrer" aria-label="View repository">View repo</a>
+          <a href="mailto:joka.dev.7@gmail.com" rel="noreferrer" aria-label="Send feedback by email">✉️ Feedback</a>
+          <a href="https://github.com/joka-7/langshift/issues/new" target="_blank" rel="noreferrer" aria-label="Report an issue">Report issue</a>
         </div>
       </footer>
     </div>
