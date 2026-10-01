@@ -37,6 +37,24 @@ nav button {
 
 .app-footer-links {
   justify-content: center;
+  flex-wrap: wrap;
+}
+
+.app-footer-links a {
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition:
+    background-color 0.15s ease,
+    transform 0.1s ease;
+}
+
+.app-footer-links a:hover {
+  background-color: var(--accent-bg);
+}
+
+.app-footer-links a:active {
+  background-color: var(--accent-border);
+  transform: scale(0.95);
 }
 
 nav button.active {

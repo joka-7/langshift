@@ -137,11 +137,11 @@ function App() {
       <footer className="app-footer">
         <p className="app-footer-credit">Built by joka-7</p>
         <div className="row app-footer-links">
-          <a href="https://github.com/joka-7" target="_blank" rel="noreferrer" aria-label="GitHub">GitHub</a>
-          <a href="https://jk-dev-7.vercel.app" target="_blank" rel="noreferrer" aria-label="jk.dev portfolio">🌐 Site</a>
-          <a href="https://github.com/joka-7/langshift" target="_blank" rel="noreferrer" aria-label="View repository">View repo</a>
-          <a href="mailto:joka.dev.7@gmail.com" rel="noreferrer" aria-label="Send feedback by email">✉️ Feedback</a>
-          <a href="https://github.com/joka-7/langshift/issues/new" target="_blank" rel="noreferrer" aria-label="Report an issue">Report issue</a>
+          <a href="https://github.com/joka-7" target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">GitHub</a>
+          <a href="https://jk-dev-7.vercel.app" target="_blank" rel="noreferrer" aria-label="jk.dev portfolio" title="jk.dev portfolio">🌐 Site</a>
+          <a href="https://github.com/joka-7/langshift" target="_blank" rel="noreferrer" aria-label="View repository" title="View repository">View repo</a>
+          <a href="mailto:joka.dev.7@gmail.com" rel="noreferrer" aria-label="Send feedback by email" title="Send feedback by email">✉️ Feedback</a>
+          <a href="https://github.com/joka-7/langshift/issues/new" target="_blank" rel="noreferrer" aria-label="Report an issue" title="Report an issue">Report issue</a>
         </div>
       </footer>
     </div>
