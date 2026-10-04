@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { postEstimate, postJob, getReport } from './api'
 import { TranslateForm } from './components/TranslateForm'
 import { EstimatePanel } from './components/EstimatePanel'
@@ -22,6 +22,14 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
+  const [showSettings, setShowSettings] = useState(false)
+
+  useEffect(() => {
+    if (!showSettings) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setShowSettings(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showSettings])
 
   async function handleEstimate(values: TranslateFormValues) {
     setError(null)
@@ -96,6 +104,9 @@ function App() {
           <button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>
             History
           </button>
+          <button aria-label="Settings" title="Settings" onClick={() => setShowSettings(true)}>
+            ⚙️
+          </button>
         </nav>
       </header>
 
@@ -136,14 +147,27 @@ function App() {
 
       <footer className="app-footer">
         <p className="app-footer-credit">Built by joka-7</p>
-        <div className="row app-footer-links">
-          <a href="https://github.com/joka-7" target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">GitHub</a>
-          <a href="https://jk-dev-7.vercel.app" target="_blank" rel="noreferrer" aria-label="jk.dev portfolio" title="jk.dev portfolio">🌐 Site</a>
-          <a href="https://github.com/joka-7/langshift" target="_blank" rel="noreferrer" aria-label="View repository" title="View repository">View repo</a>
-          <a href="mailto:joka.dev.7@gmail.com" rel="noreferrer" aria-label="Send feedback by email" title="Send feedback by email">✉️ Feedback</a>
-          <a href="https://github.com/joka-7/langshift/issues/new" target="_blank" rel="noreferrer" aria-label="Report an issue" title="Report an issue">Report issue</a>
-        </div>
       </footer>
+
+      {showSettings && (
+        <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && setShowSettings(false)}>
+          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+            <div className="row modal-head">
+              <h2 id="settings-title">Settings</h2>
+              <button aria-label="Close" title="Close" onClick={() => setShowSettings(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="row app-footer-links">
+              <a href="https://github.com/joka-7" target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">GitHub</a>
+              <a href="https://jk-dev-7.vercel.app" target="_blank" rel="noreferrer" aria-label="jk.dev portfolio" title="jk.dev portfolio">🌐 Site</a>
+              <a href="https://github.com/joka-7/langshift" target="_blank" rel="noreferrer" aria-label="View repository" title="View repository">View repo</a>
+              <a href="mailto:joka.dev.7@gmail.com" rel="noreferrer" aria-label="Send feedback by email" title="Send feedback by email">✉️ Feedback</a>
+              <a href="https://github.com/joka-7/langshift/issues/new" target="_blank" rel="noreferrer" aria-label="Report an issue" title="Report an issue">Report issue</a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
