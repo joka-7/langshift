@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from repo_translator.providers.base import LLMProvider
+from repo_translator.providers.base import LLMProvider, ResponseTruncatedError
 
 
 class OpenAIProvider(LLMProvider):
@@ -20,7 +20,10 @@ class OpenAIProvider(LLMProvider):
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            raise ResponseTruncatedError(f"Response cut off at max_tokens={max_tokens}")
+        content = choice.message.content
         if content is None:
             raise ValueError("OpenAI response had no text content")
         return content.strip()

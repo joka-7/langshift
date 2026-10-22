@@ -3,7 +3,7 @@ from __future__ import annotations
 import anthropic
 from anthropic.types import TextBlock
 
-from repo_translator.providers.base import LLMProvider
+from repo_translator.providers.base import LLMProvider, ResponseTruncatedError
 
 # Friendly alias -> exact model ID. IDs are complete as written; they take no
 # date suffix. `--model` also accepts a raw ID, so a model released after this
@@ -26,6 +26,8 @@ class ClaudeProvider(LLMProvider):
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
+        if message.stop_reason == "max_tokens":
+            raise ResponseTruncatedError(f"Response cut off at max_tokens={max_tokens}")
         block = message.content[0]
         if not isinstance(block, TextBlock):
             raise ValueError(f"Expected a text response block, got {type(block).__name__}")

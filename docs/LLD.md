@@ -108,6 +108,10 @@ class LLMProvider(ABC):
 Every backend (`claude.py`, `openai.py`, `gemini.py`, `groq.py`, `ollama.py`,
 `openai_compat.py`, `offline.py`) implements `complete()` only; `OfflineProvider` overrides
 `max_fix_attempts = 1` since retrying a deterministic rule-based transform is pointless.
+`claude.py`, `openai.py`, `groq.py` and `openai_compat.py` raise `ResponseTruncatedError`
+(base.py, a `ValueError`) when the model stops at `max_tokens` (`stop_reason == "max_tokens"` /
+`finish_reason == "length"`), so callers record a failure instead of writing a cut-off file.
+`gemini.py` and `ollama.py` don't check yet.
 
 ### Factories  _(providers/__init__.py)_
 

@@ -12,9 +12,10 @@ import pytest
 from anthropic.types import TextBlock
 
 from repo_translator.providers import SUPPORTED_PROVIDERS, make_provider
-from repo_translator.providers.base import LLMProvider
+from repo_translator.providers.base import LLMProvider, ResponseTruncatedError
 from repo_translator.providers.claude import CLAUDE_MODELS, ClaudeProvider
 from repo_translator.providers.groq import GroqProvider
+from repo_translator.providers.openai import OpenAIProvider
 from repo_translator.providers.openai_compat import OpenAICompatProvider
 
 # ─────────────────────────────────────────────
@@ -100,6 +101,19 @@ class TestClaudeProvider:
         assert set(CLAUDE_MODELS.keys()) == {"haiku", "sonnet", "opus"}
         for model_id in CLAUDE_MODELS.values():
             assert model_id.startswith("claude-")
+
+    def test_response_cut_off_at_max_tokens_raises(self):
+        # A translation cut off mid-file still parses as text; returned as-is it
+        # would be written out and, with execution off, reported as "ok".
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value.content = [
+            MagicMock(spec=TextBlock, text="def half_a_func")
+        ]
+        mock_client.messages.create.return_value.stop_reason = "max_tokens"
+        with patch("repo_translator.providers.claude.anthropic.Anthropic", return_value=mock_client):
+            p = ClaudeProvider(model_id="claude-sonnet-4-6")
+            with pytest.raises(ResponseTruncatedError):
+                p.complete("translate this")
 
 
 # ─────────────────────────────────────────────
@@ -339,3 +353,27 @@ class TestOpenAICompatProvider:
             )
             with pytest.raises(ValueError, match="no text content"):
                 p.complete("hello")
+
+
+# ─────────────────────────────────────────────
+# Truncation across chat.completions-shaped providers
+# ─────────────────────────────────────────────
+
+class TestChatCompletionsTruncation:
+    @pytest.mark.parametrize(("module", "sdk_class", "build"), [
+        ("openai", "OpenAI", lambda: OpenAIProvider(model_id="gpt-4o")),
+        ("groq", "Groq", lambda: GroqProvider(model_id="llama-3.1-70b-versatile")),
+        ("openai", "OpenAI", lambda: OpenAICompatProvider(
+            model_id="m", base_url="https://api.together.xyz/v1")),
+    ])
+    def test_finish_reason_length_raises(self, module, sdk_class, build):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content="def half_a_func"), finish_reason="length")
+        ]
+        mock_mod = MagicMock()
+        getattr(mock_mod, sdk_class).return_value = mock_client
+        with patch.dict("sys.modules", {module: mock_mod}):
+            p = build()
+            with pytest.raises(ResponseTruncatedError):
+                p.complete("translate this")
