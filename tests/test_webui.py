@@ -34,7 +34,8 @@ def isolated_data_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def client():
     from repo_translator.webui.main import app
-    return TestClient(app)
+    # TestClient's default Host ("testserver") isn't one the API trusts.
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 def _wait_for_job(client, job_id, timeout=5):
@@ -252,6 +253,30 @@ class TestCorsPolicy:
         resp = client.get("/api/languages", headers={"Origin": origin})
         assert resp.status_code == 200
         assert resp.headers["access-control-allow-origin"] == origin
+
+
+class TestHostHeaderPolicy:
+    """
+    CORS can't stop DNS rebinding: once attacker.example resolves to 127.0.0.1,
+    the attacker's page *is* same-origin with the API as far as the browser
+    knows, so it can start a job rooted anywhere and read files back through
+    /file. The one thing the browser can't forge is the Host header -- it stays
+    attacker.example -- so that is what has to be checked.
+    """
+
+    @pytest.mark.parametrize(
+        ("host", "expected_status"),
+        [
+            ("attacker.example:8765", 400),
+            ("attacker.example", 400),
+            ("localhost:8765", 200),
+            ("localhost:5173", 200),
+            ("127.0.0.1:8765", 200),
+        ],
+    )
+    def test_host_header(self, client, host, expected_status):
+        resp = client.get("/api/languages", headers={"Host": host})
+        assert resp.status_code == expected_status
 
 
 # ─────────────────────────────────────────────

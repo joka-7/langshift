@@ -71,8 +71,8 @@ and absolute paths *within* a job root; it deliberately does not constrain which
 root a job may declare, because pointing the tool at an arbitrary directory is
 its purpose on the CLI.
 
-That capability is safe only while the caller is you. Two things keep it that
-way, and neither should be loosened:
+That capability is safe only while the caller is you. Three things keep it that
+way, and none should be loosened:
 
 - **Do not bind it to `0.0.0.0`** or put it behind a tunnel or reverse proxy.
 - **CORS is an allowlist** of `localhost`/`127.0.0.1` on ports 5173 and 8765
@@ -80,6 +80,11 @@ way, and neither should be loosened:
   not stop a website you visit from POSTing to `127.0.0.1`; the allowlist is what
   stops it *reading the reply*. With `allow_origins=["*"]` any page could
   register a job rooted at `/` and read your disk through the file endpoint.
+- **The Host header must be `localhost` or `127.0.0.1`** (`ALLOWED_HOSTS`,
+  same file; anything else gets a 400). CORS does not cover DNS rebinding: once
+  a hostile domain resolves to `127.0.0.1`, its page is same-origin with the
+  API and CORS never applies, but the request still names that domain in
+  `Host`.
 
 ### API keys
 
