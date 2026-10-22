@@ -174,7 +174,10 @@ def supported_languages() -> list[dict]
 `threading.Thread` running `_run_job()`, which calls `agent.translate_repo(..., on_progress=...)`.
 `on_progress` pushes each event onto `job.events` (consumed by the SSE endpoint) and appends to
 `job.history` (so a client reconnecting mid-run sees everything emitted so far). On completion,
-`_append_history()` persists a summary row to `HISTORY_FILE` for the History tab.
+`_append_history()` persists a summary row to `HISTORY_FILE` for the History tab. It holds
+`_HISTORY_LOCK` (job threads finish concurrently), writes to a `.tmp` sibling and swaps it in, and
+moves an unparseable history file aside to `webui_history.json.corrupt-<ns>` rather than
+overwriting it. Readers (`_load_history()`) still treat an unreadable file as empty.
 
 `DATA_DIR = Path(os.environ.get("REPO_TRANSLATOR_DATA_DIR", Path.home() / ".repo_translator"))` —
 overridable via env var, which is how both `tests/test_webui.py` and the Playwright e2e suite

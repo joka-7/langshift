@@ -388,6 +388,19 @@ class TestHistoryPersistence:
         assert not jobs.HISTORY_FILE.exists()
         assert jobs._load_history() == []
 
+    def test_append_after_corruption_keeps_the_unreadable_file(self):
+        jobs.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        corrupt = '[{"id": "old", "created_at": 1}, {"id": "trunc'
+        jobs.HISTORY_FILE.write_text(corrupt)
+        job = jobs.Job(id="new", input_path="i", output_path="o", from_lang="typescript",
+                       to_lang="python", provider="offline", model="n/a")
+
+        jobs._append_history(job)
+
+        assert [e["id"] for e in jobs._load_history()] == ["new"]
+        backups = list(jobs.DATA_DIR.glob("webui_history.json.corrupt-*"))
+        assert [b.read_text() for b in backups] == [corrupt]
+
 
 # ─────────────────────────────────────────────
 # _run_job failure path (jobs.py)

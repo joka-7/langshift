@@ -228,18 +228,50 @@ def _run_job(
         job.events.put(DONE)
 
 
+# Job threads finish independently; without this, two appends can each read the
+# same entries and the second write drops the first's job.
+_HISTORY_LOCK = threading.Lock()
+
+
 def _append_history(job: Job) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    entries = _load_history()
-    entries.append(job.to_dict())
-    HISTORY_FILE.write_text(json.dumps(entries[-200:], indent=2), encoding="utf-8")
+    with _HISTORY_LOCK:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            entries = _read_history_file()
+        except (json.JSONDecodeError, OSError):
+            # Rewriting over an unreadable file would destroy whatever of it
+            # could still be recovered by hand, so it is moved aside instead.
+            HISTORY_FILE.replace(HISTORY_FILE.with_name(
+                f"{HISTORY_FILE.name}.corrupt-{time.time_ns()}"
+            ))
+            entries = []
+        entries.append(job.to_dict())
+        # Written beside the real file and swapped in, so a crash mid-write
+        # leaves the previous history intact rather than a truncated file.
+        tmp = HISTORY_FILE.with_name(f"{HISTORY_FILE.name}.tmp")
+        tmp.write_text(json.dumps(entries[-200:], indent=2), encoding="utf-8")
+        tmp.replace(HISTORY_FILE)
+
+
+def _read_history_file() -> list[dict]:
+    """Parse the history file.
+
+    Returns:
+        The persisted entries; empty when no history has been written yet.
+
+    Raises:
+        json.JSONDecodeError: The file exists but is not valid JSON.
+        OSError: The file exists but can't be read.
+    """
+    if not HISTORY_FILE.exists():
+        return []
+    entries: list[dict] = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    return entries
 
 
 def _load_history() -> list[dict]:
-    if not HISTORY_FILE.exists():
-        return []
     try:
-        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        return _read_history_file()
     except (json.JSONDecodeError, OSError):
         return []
 
