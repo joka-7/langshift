@@ -52,6 +52,16 @@ class TestIsRateLimitError:
     def test_does_not_match_model_error(self):
         assert not is_rate_limit_error(Exception("model not found"))
 
+    @pytest.mark.parametrize("msg", [
+        "prompt is 14290 tokens, max is 8000",
+        "invalid request: field order_4291 not found",
+    ])
+    def test_does_not_match_429_inside_a_longer_number(self, msg):
+        assert not is_rate_limit_error(Exception(msg))
+
+    def test_413_inside_a_longer_number_does_not_mask_a_rate_limit(self):
+        assert is_rate_limit_error(Exception("Error code: 429 - used 4130 of 4000 tokens"))
+
     def test_does_not_match_413_too_large(self):
         assert not is_rate_limit_error(Exception(
             "Error code: 413 - Request too large for model on tokens per minute (TPM): Limit 6000, Requested 8488"

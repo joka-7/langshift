@@ -19,13 +19,19 @@ MAX_WAIT    = 120   # seconds — auto-retry for short limits; fail fast for dai
 _BASE_WAIT  = 1     # exponential-backoff base (doubles each attempt)
 
 
+# A status code only counts standing alone: a bare substring test reads
+# "14290 tokens" as a 429 and retries an error no wait can fix.
+_HTTP_413 = re.compile(r"(?<!\d)413(?!\d)")
+_HTTP_429 = re.compile(r"(?<!\d)429(?!\d)")
+
+
 def is_rate_limit_error(e: Exception) -> bool:
     msg = str(e).lower()
     # 413 = request physically too large — retrying won't help, exclude it
-    if "413" in msg or "request too large" in msg:
+    if _HTTP_413.search(msg) or "request too large" in msg:
         return False
     return (
-        "429" in msg
+        bool(_HTTP_429.search(msg))
         or "rate_limit" in msg
         or "rate limit" in msg
         or "too many requests" in msg

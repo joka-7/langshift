@@ -131,8 +131,8 @@ def is_rate_limit_error(exc: Exception) -> bool
 def parse_retry_after(message: str) -> float | None
 ```
 
-Wraps `provider.complete()`. On a rate-limit error (429 / "rate limit" / "too many requests" in
-the message, but never on 413 "too large"), parses a provider-supplied "try again in Xh Ym Z.Zs"
+Wraps `provider.complete()`. On a rate-limit error (a standalone 429 — not one inside a longer
+number — or "rate limit" / "too many requests" in the message, but never on 413 "too large"), parses a provider-supplied "try again in Xh Ym Z.Zs"
 hint if present, otherwise applies exponential backoff (`_BASE_WAIT=1`, doubling, capped at
 `MAX_WAIT=120`s), up to `MAX_RETRIES=6` attempts. If the required wait exceeds `MAX_WAIT`
 (daily-quota exhaustion) or the error isn't rate-limit-related, re-raises immediately.
